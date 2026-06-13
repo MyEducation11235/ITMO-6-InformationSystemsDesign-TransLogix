@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Маршруты{% endblock %}
+{% block page_title %}Подтверждённые маршруты{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <!-- Routes list -->
+  <div class="col-xl-4">
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-signpost-2 me-2 text-primary"></i>Маршруты</span>
+        <a href="/route-builder" class="btn btn-sm btn-primary">
+          <i class="bi bi-plus-lg me-1"></i>Новый
+        </a>
+      </div>
+      <div id="routesList" class="list-group list-group-flush" style="max-height:520px;overflow-y:auto;">
+        <div class="list-group-item text-muted text-center py-3">Загрузка…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Route detail & map -->
+  <div class="col-xl-8">
+    <div class="card mb-3" id="routeDetailCard" style="display:none!important">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span id="routeDetailTitle"><i class="bi bi-map me-2 text-primary"></i>Детали маршрута</span>
+        <span class="badge bg-success"><i class="bi bi-check2 me-1"></i>Подтверждён</span>
+      </div>
+      <div class="card-body pb-0">
+        <div class="row g-2 mb-3">
+          <div class="col-auto">
+            <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+              <i class="bi bi-arrows-move me-1"></i>
+              <span id="detailDist">—</span> км
+            </span>
+          </div>
+          <div class="col-auto">
+            <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">
+              <i class="bi bi-flag me-1"></i>
+              <span id="detailStops">—</span> остановок
+            </span>
+          </div>
+        </div>
+        <ol id="detailStopsList" style="font-size:.9rem;"></ol>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><i class="bi bi-map me-2 text-primary"></i>Карта</div>
+      <div class="card-body p-0">
+        <div id="routeDetailMap" style="height:420px;border-radius:0 0 .5rem .5rem;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let detailMap = null, detailLayer = [];
+
+async function loadRoutes() {
+  const routes = await apiFetch('/api/routes');
+  const container = document.getElementById('routesList');
+
+  if (!routes || !routes.length) {
+    container.innerHTML = '<div class="list-group-item text-muted text-center py-4"><i class="bi bi-signpost-2 d-block fs-2 mb-2 text-muted"></i>Нет маршрутов.<br><a href="/route-builder">Создать первый</a></div>';
+    return;
+  }
+
+  container.innerHTML = routes.map(r => `
+    <button class="list-group-item list-group-item-action" onclick="showRoute(${r.id})">
+      <div class="d-flex justify-content-between align-items-start">
+        <div>
+          <strong>${r.name}</strong>
+          <div class="text-muted small mt-1">
+            <i class="bi bi-arrows-move me-1"></i>${r.total_distance.toFixed(2)} км &nbsp;
+            <i class="bi bi-flag me-1"></i>${r.stops.length} ост.
+          </div>
+        </div>
+        <div class="text-end">
+          <span class="badge ${r.confirmed ? 'bg-success' : 'bg-secondary'}">${r.confirmed ? 'Подтверждён' : 'Черновик'}</span>
+          <div class="text-muted small mt-1">${formatDate(r.created_at)}</div>
+        </div>
+      </div>
+    </button>`).join('');
+
+  // Show the first route by default
+  if (routes.length) showRoute(routes[0].id);
+}
+
+async function showRoute(id) {
+  const route = await apiFetch(`/api/routes/${id}`);
+  if (!route) return;
+
+  document.getElementById('routeDetailCard').style.display = '';
+  document.getElementById('routeDetailTitle').innerHTML = `<i class="bi bi-map me-2 text-primary"></i>${route.name}`;
+  document.getElementById('detailDist').textContent = route.total_distance.toFixed(2);
+  document.getElementById('detailStops').textContent = route.stops.length;
+
+  const list = document.getElementById('detailStopsList');
+  list.innerHTML = route.stops.map((s, i) => {
+    const icon = s.stop_type === 'warehouse' ? '🏭' : '📦';
+    return `<li class="mb-1">${icon} <strong>${s.address}</strong>
+      ${s.stop_type === 'delivery' ? `<br><small class="text-muted">Заказ #${s.order_id}</small>` : ''}</li>`;
+  }).join('');
+
+  // Map
+  if (!detailMap) {
+    detailMap = L.map('routeDetailMap').setView([55.75, 37.62], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(detailMap);
+  }
+  detailLayer.forEach(l => detailMap.removeLayer(l));
+  detailLayer = [];
+
+  const latlngs = route.stops.map(s => [s.lat, s.lon]);
+  const poly = L.polyline(latlngs, { color: '#16a34a', weight: 4, opacity: 0.85 }).addTo(detailMap);
+  detailLayer.push(poly);
+
+  route.stops.forEach((s, i) => {
+    const icon = L.divIcon({
+      html: `<div class="map-icon-stop ${s.stop_type === 'warehouse' ? 'warehouse' : ''}">${i}</div>`,
+      className: '', iconSize: [30, 30], iconAnchor: [15, 30]
+    });
+    const m = L.marker([s.lat, s.lon], { icon }).addTo(detailMap)
+      .bindPopup(`<b>${i === 0 ? 'Старт' : 'Остановка ' + i}</b><br>${s.address}`);
+    detailLayer.push(m);
+  });
+
+  if (latlngs.length) detailMap.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+}
+
+loadRoutes();
+</script>
+{% endblock %}

@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Склады{% endblock %}
+{% block page_title %}Управление складами{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <p class="text-muted mb-0">Все зарегистрированные склады системы</p>
+  <button class="btn btn-primary" onclick="openWarehouseModal()">
+    <i class="bi bi-plus-lg me-1"></i>Добавить склад
+  </button>
+</div>
+
+<!-- Map -->
+<div class="card mb-4">
+  <div class="card-header"><i class="bi bi-map me-2 text-primary"></i>Расположение складов</div>
+  <div class="card-body p-0">
+    <div id="warehouseMap" style="height:280px;border-radius:0 0 .5rem .5rem;"></div>
+  </div>
+</div>
+
+<!-- Table -->
+<div class="card">
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-light">
+          <tr><th>#</th><th>Название</th><th>Адрес</th><th>Координаты</th><th>Контакт</th><th>Действия</th></tr>
+        </thead>
+        <tbody id="warehouseBody">
+          <tr><td colspan="6" class="text-center text-muted py-3">Загрузка…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal fade" id="warehouseModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="warehouseModalTitle">Склад</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="wId" />
+        <div class="mb-3">
+          <label class="form-label">Название <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="wName" placeholder="Склад Север" />
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Адрес <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="wAddress" placeholder="Москва, ул. Примерная, 1" />
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col">
+            <label class="form-label">Широта (lat) <span class="text-danger">*</span></label>
+            <input type="number" step="0.0001" class="form-control" id="wLat" placeholder="55.7558" />
+          </div>
+          <div class="col">
+            <label class="form-label">Долгота (lon) <span class="text-danger">*</span></label>
+            <input type="number" step="0.0001" class="form-control" id="wLon" placeholder="37.6173" />
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Контакт</label>
+          <input type="text" class="form-control" id="wContact" placeholder="+7 (495) 000-00-00" />
+        </div>
+        <div id="warehouseFormError" class="alert alert-danger d-none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+        <button class="btn btn-primary" onclick="saveWarehouse()">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let whMap = null;
+
+async function loadWarehouses() {
+  const data = await apiFetch('/api/warehouses');
+  if (!data) return;
+
+  const tbody = document.getElementById('warehouseBody');
+  if (data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">Нет складов. Добавьте первый!</td></tr>';
+  } else {
+    tbody.innerHTML = data.map(w => `
+      <tr>
+        <td><span class="text-muted">#${w.id}</span></td>
+        <td><strong>${w.name}</strong></td>
+        <td>${w.address}</td>
+        <td><code>${w.lat}, ${w.lon}</code></td>
+        <td>${w.contact || '—'}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-primary me-1" onclick="openWarehouseModal(${JSON.stringify(w).replace(/"/g,'&quot;')})"><i class="bi bi-pencil"></i></button>
+          <button class="btn btn-sm btn-outline-danger" onclick="deleteWarehouse(${w.id}, '${w.name}')"><i class="bi bi-trash"></i></button>
+        </td>
+      </tr>`).join('');
+  }
+
+  // Map
+  if (!whMap) {
+    whMap = L.map('warehouseMap').setView([55.75, 37.62], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(whMap);
+  } else {
+    whMap.eachLayer(l => { if (l instanceof L.Marker) whMap.removeLayer(l); });
+  }
+  const wIcon = L.divIcon({ html: '<div class="map-icon-warehouse"><i class="bi bi-building"></i></div>', className: '', iconSize: [36, 36], iconAnchor: [18, 36] });
+  data.forEach(w => {
+    L.marker([w.lat, w.lon], { icon: wIcon }).addTo(whMap)
+      .bindPopup(`<b>${w.name}</b><br>${w.address}<br>${w.contact || ''}`);
+  });
+}
+
+function openWarehouseModal(w) {
+  const modal = new bootstrap.Modal(document.getElementById('warehouseModal'));
+  document.getElementById('warehouseModalTitle').textContent = w ? 'Редактировать склад' : 'Новый склад';
+  document.getElementById('wId').value = w ? w.id : '';
+  document.getElementById('wName').value = w ? w.name : '';
+  document.getElementById('wAddress').value = w ? w.address : '';
+  document.getElementById('wLat').value = w ? w.lat : '';
+  document.getElementById('wLon').value = w ? w.lon : '';
+  document.getElementById('wContact').value = w ? w.contact : '';
+  document.getElementById('warehouseFormError').classList.add('d-none');
+  modal.show();
+}
+
+async function saveWarehouse() {
+  const id = document.getElementById('wId').value;
+  const body = {
+    name: document.getElementById('wName').value.trim(),
+    address: document.getElementById('wAddress').value.trim(),
+    lat: parseFloat(document.getElementById('wLat').value),
+    lon: parseFloat(document.getElementById('wLon').value),
+    contact: document.getElementById('wContact').value.trim(),
+  };
+
+  const errEl = document.getElementById('warehouseFormError');
+  if (!body.name || !body.address || isNaN(body.lat) || isNaN(body.lon)) {
+    errEl.textContent = 'Заполните все обязательные поля.'; errEl.classList.remove('d-none'); return;
+  }
+  errEl.classList.add('d-none');
+
+  const url = id ? `/api/warehouses/${id}` : '/api/warehouses';
+  const method = id ? 'PUT' : 'POST';
+  const res = await apiFetch(url, { method, body: JSON.stringify(body) });
+  if (res) {
+    bootstrap.Modal.getInstance(document.getElementById('warehouseModal')).hide();
+    showToast('Склад сохранён', 'success');
+    loadWarehouses();
+  }
+}
+
+async function deleteWarehouse(id, name) {
+  if (!confirm(`Удалить склад "${name}"?`)) return;
+  await apiFetch(`/api/warehouses/${id}`, { method: 'DELETE' });
+  showToast('Склад удалён', 'warning');
+  loadWarehouses();
+}
+
+loadWarehouses();
+</script>
+{% endblock %}

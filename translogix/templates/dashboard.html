@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Дашборд{% endblock %}
+{% block page_title %}Дашборд логиста{% endblock %}
+
+{% block content %}
+<!-- Metric cards -->
+<div class="row g-3 mb-4" id="metricsRow">
+  <div class="col-sm-6 col-xl-3">
+    <div class="metric-card">
+      <div class="metric-icon bg-primary-subtle text-primary">
+        <i class="bi bi-clipboard-check fs-4"></i>
+      </div>
+      <div>
+        <div class="metric-value" id="m-new-orders">—</div>
+        <div class="metric-label">Новых заказов</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="metric-card">
+      <div class="metric-icon bg-warning-subtle text-warning">
+        <i class="bi bi-truck fs-4"></i>
+      </div>
+      <div>
+        <div class="metric-value" id="m-inroute-orders">—</div>
+        <div class="metric-label">В маршруте</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="metric-card">
+      <div class="metric-icon bg-danger-subtle text-danger">
+        <i class="bi bi-exclamation-triangle fs-4"></i>
+      </div>
+      <div>
+        <div class="metric-value" id="m-low-stock">—</div>
+        <div class="metric-label">Низкий запас</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="metric-card">
+      <div class="metric-icon bg-success-subtle text-success">
+        <i class="bi bi-signpost-2 fs-4"></i>
+      </div>
+      <div>
+        <div class="metric-value" id="m-routes-today">—</div>
+        <div class="metric-label">Маршрутов сегодня</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <!-- Map -->
+  <div class="col-xl-7">
+    <div class="card h-100">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-map me-2 text-primary"></i>Карта склада и активных заказов</span>
+        <small class="text-muted" id="mapUpdateTime"></small>
+      </div>
+      <div class="card-body p-0">
+        <div id="dashMap" style="height:360px;border-radius:0 0 .5rem .5rem;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Low stock alerts -->
+  <div class="col-xl-5">
+    <div class="card h-100">
+      <div class="card-header">
+        <i class="bi bi-exclamation-triangle-fill me-2 text-warning"></i>Критический запас
+      </div>
+      <div class="card-body p-0">
+        <div id="lowStockList" class="list-group list-group-flush"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent orders -->
+<div class="card">
+  <div class="card-header d-flex align-items-center justify-content-between">
+    <span><i class="bi bi-clock-history me-2 text-primary"></i>Последние заказы</span>
+    <a href="/orders" class="btn btn-sm btn-outline-primary">Все заказы</a>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>#</th><th>Товар</th><th>Кол-во</th><th>Адрес</th><th>Статус</th><th>Создан</th>
+          </tr>
+        </thead>
+        <tbody id="recentOrdersBody">
+          <tr><td colspan="6" class="text-center text-muted py-3">Загрузка…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let dashMap = null;
+
+async function loadDashboard() {
+  const data = await apiFetch('/api/dashboard');
+  if (!data) return;
+
+  document.getElementById('m-new-orders').textContent = data.orders.new;
+  document.getElementById('m-inroute-orders').textContent = data.orders.in_route;
+  document.getElementById('m-low-stock').textContent = data.inventory.low_stock_count;
+  document.getElementById('m-routes-today').textContent = data.routes.today;
+  document.getElementById('mapUpdateTime').textContent = 'обновлено ' + new Date().toLocaleTimeString('ru');
+
+  // Map
+  if (!dashMap) {
+    dashMap = L.map('dashMap').setView([55.75, 37.62], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(dashMap);
+  } else {
+    dashMap.eachLayer(l => { if (l instanceof L.Marker || l instanceof L.Polyline) dashMap.removeLayer(l); });
+  }
+
+  const wIcon = L.divIcon({ html: '<div class="map-icon-warehouse"><i class="bi bi-building"></i></div>', className: '', iconSize: [36, 36], iconAnchor: [18, 36] });
+  const oIcon = L.divIcon({ html: '<div class="map-icon-order"><i class="bi bi-box-seam"></i></div>', className: '', iconSize: [30, 30], iconAnchor: [15, 30] });
+
+  data.map.warehouses.forEach(w => {
+    L.marker([w.lat, w.lon], { icon: wIcon }).addTo(dashMap)
+      .bindPopup(`<b>${w.name}</b><br>${w.address}`);
+  });
+  data.map.orders.forEach(o => {
+    L.marker([o.lat, o.lon], { icon: oIcon }).addTo(dashMap)
+      .bindPopup(`<b>Заказ #${o.id}</b><br>${o.product}<br>${o.address}<br><span class="badge ${statusBadge(o.status)}">${statusLabel(o.status)}</span>`);
+  });
+
+  // Low stock
+  const lowList = document.getElementById('lowStockList');
+  if (data.inventory.low_stock_items.length === 0) {
+    lowList.innerHTML = '<div class="list-group-item text-muted text-center py-4"><i class="bi bi-check-circle text-success fs-4 d-block mb-2"></i>Все запасы в норме</div>';
+  } else {
+    lowList.innerHTML = data.inventory.low_stock_items.map(item => `
+      <div class="list-group-item list-group-item-action">
+        <div class="d-flex w-100 justify-content-between">
+          <strong>${item.product_name}</strong>
+          <span class="badge bg-danger">${item.quantity} ${item.product_unit}</span>
+        </div>
+        <small class="text-muted">${item.warehouse_name} · Порог: ${item.reorder_level}</small>
+        <div class="mt-1">
+          <small class="text-warning"><i class="bi bi-arrow-up-circle me-1"></i>Рекомендуется пополнить: +${item.recommended_qty} ${item.product_unit}</small>
+        </div>
+      </div>`).join('');
+  }
+
+  // Recent orders
+  const tbody = document.getElementById('recentOrdersBody');
+  if (data.recent_orders.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-3">Нет заказов</td></tr>';
+  } else {
+    tbody.innerHTML = data.recent_orders.map(o => `
+      <tr>
+        <td><span class="text-muted">#${o.id}</span></td>
+        <td>${o.product_name || '—'}</td>
+        <td>${o.quantity} ${o.product_unit || ''}</td>
+        <td class="text-truncate" style="max-width:200px;">${o.delivery_address}</td>
+        <td><span class="badge ${statusBadge(o.status)}">${statusLabel(o.status)}</span></td>
+        <td><small class="text-muted">${formatDate(o.created_at)}</small></td>
+      </tr>`).join('');
+  }
+}
+
+loadDashboard();
+</script>
+{% endblock %}

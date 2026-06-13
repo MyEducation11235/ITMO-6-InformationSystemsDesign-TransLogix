@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Построить маршрут{% endblock %}
+{% block page_title %}Оптимизация маршрута{% endblock %}
+
+{% block content %}
+<div class="row g-3">
+  <!-- Left panel: controls -->
+  <div class="col-xl-4">
+    <!-- Step 1: Select orders -->
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-1-circle me-2 text-primary"></i>Выберите заказы</div>
+      <div class="card-body p-0">
+        <div id="orderCheckList" style="max-height:220px;overflow-y:auto;" class="p-2">
+          <div class="text-muted text-center py-3">Загрузка…</div>
+        </div>
+      </div>
+      <div class="card-footer py-2">
+        <button class="btn btn-sm btn-outline-secondary w-100" onclick="selectAllOrders()">Выбрать все новые заказы</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Select warehouse -->
+    <div class="card mb-3">
+      <div class="card-header"><i class="bi bi-2-circle me-2 text-primary"></i>Начальный склад</div>
+      <div class="card-body">
+        <select class="form-select" id="startWarehouse">
+          <option value="">Выберите склад…</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Step 3: Optimize -->
+    <div class="d-grid mb-3">
+      <button class="btn btn-primary btn-lg" onclick="runOptimize()" id="optimizeBtn">
+        <i class="bi bi-cpu me-2"></i>Построить оптимальный маршрут
+      </button>
+    </div>
+
+    <!-- Results -->
+    <div id="routeResultPanel" class="d-none">
+      <div class="card mb-3 border-success">
+        <div class="card-header bg-success-subtle text-success fw-semibold">
+          <i class="bi bi-check-circle me-2"></i>Результат оптимизации
+        </div>
+        <div class="card-body">
+          <p class="mb-2">Общее расстояние: <strong id="totalDist">—</strong> км</p>
+          <ol class="mb-0" id="stopsList" style="font-size:.9rem;"></ol>
+        </div>
+      </div>
+      <div class="d-grid">
+        <button class="btn btn-success btn-lg" onclick="confirmRoute()" id="confirmBtn">
+          <i class="bi bi-check2-all me-2"></i>Подтвердить маршрут
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right panel: map -->
+  <div class="col-xl-8">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-map me-2 text-primary"></i>Карта маршрута</div>
+      <div class="card-body p-0">
+        <div id="routeMap" style="height:560px;border-radius:0 0 .5rem .5rem;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let routeMap = null, routeLayer = null, currentRouteData = null;
+let ordersData = [], warehousesData = [];
+let selectedOrderIds = new Set();
+
+async function init() {
+  [ordersData, warehousesData] = await Promise.all([
+    apiFetch('/api/orders?status=new'),
+    apiFetch('/api/warehouses'),
+  ]);
+
+  // Pre-select orders passed from orders page
+  const saved = localStorage.getItem('selectedOrderIds');
+  if (saved) {
+    JSON.parse(saved).forEach(id => selectedOrderIds.add(id));
+    localStorage.removeItem('selectedOrderIds');
+  }
+
+  renderOrderCheckList();
+  renderWarehouseSelect();
+  initMap();
+}
+
+function renderOrderCheckList() {
+  const container = document.getElementById('orderCheckList');
+  if (!ordersData.length) {
+    container.innerHTML = '<div class="text-muted text-center py-3">Нет новых заказов</div>'; return;
+  }
+  container.innerHTML = ordersData.map(o => `
+    <div class="form-check border-bottom pb-1 mb-1 px-2">
+      <input class="form-check-input" type="checkbox" id="oc${o.id}" value="${o.id}"
+        ${selectedOrderIds.has(o.id) ? 'checked' : ''}
+        onchange="toggleOrderSel(${o.id}, this.checked)" />
+      <label class="form-check-label" for="oc${o.id}">
+        <strong>#${o.id}</strong> ${o.product_name} × ${o.quantity}<br>
+        <small class="text-muted">${o.delivery_address}</small>
+      </label>
+    </div>`).join('');
+}
+
+function toggleOrderSel(id, checked) {
+  if (checked) selectedOrderIds.add(id); else selectedOrderIds.delete(id);
+}
+
+function selectAllOrders() {
+  ordersData.forEach(o => { selectedOrderIds.add(o.id); });
+  renderOrderCheckList();
+}
+
+function renderWarehouseSelect() {
+  const sel = document.getElementById('startWarehouse');
+  sel.innerHTML = '<option value="">Выберите склад…</option>' +
+    warehousesData.map(w => `<option value="${w.id}">${w.name} — ${w.address}</option>`).join('');
+}
+
+function initMap() {
+  routeMap = L.map('routeMap').setView([55.75, 37.62], 10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+  }).addTo(routeMap);
+
+  const wIcon = L.divIcon({ html: '<div class="map-icon-warehouse"><i class="bi bi-building"></i></div>', className: '', iconSize: [36, 36], iconAnchor: [18, 36] });
+  const oIcon = L.divIcon({ html: '<div class="map-icon-order"><i class="bi bi-box-seam"></i></div>', className: '', iconSize: [30, 30], iconAnchor: [15, 30] });
+
+  warehousesData.forEach(w => {
+    L.marker([w.lat, w.lon], { icon: wIcon }).addTo(routeMap)
+      .bindPopup(`<b>Склад: ${w.name}</b><br>${w.address}`);
+  });
+  ordersData.forEach(o => {
+    L.marker([o.delivery_lat, o.delivery_lon], { icon: oIcon }).addTo(routeMap)
+      .bindPopup(`<b>Заказ #${o.id}</b><br>${o.product_name} × ${o.quantity}<br>${o.delivery_address}`);
+  });
+}
+
+async function runOptimize() {
+  const orderIds = [...selectedOrderIds].map(Number);
+  const warehouseId = parseInt(document.getElementById('startWarehouse').value);
+
+  if (!orderIds.length) { showToast('Выберите хотя бы один заказ', 'warning'); return; }
+  if (!warehouseId) { showToast('Выберите начальный склад', 'warning'); return; }
+
+  const btn = document.getElementById('optimizeBtn');
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Оптимизация…';
+  btn.disabled = true;
+
+  const data = await apiFetch('/api/optimize_route', {
+    method: 'POST',
+    body: JSON.stringify({ order_ids: orderIds, warehouse_id: warehouseId }),
+  });
+
+  btn.innerHTML = '<i class="bi bi-cpu me-2"></i>Построить оптимальный маршрут';
+  btn.disabled = false;
+
+  if (!data) return;
+  currentRouteData = data;
+  drawRoute(data);
+  showRouteResult(data);
+}
+
+function drawRoute(data) {
+  // Clear previous route layer
+  if (routeLayer) { routeLayer.forEach(l => routeMap.removeLayer(l)); }
+  routeLayer = [];
+
+  const latlngs = data.stops.map(s => [s.lat, s.lon]);
+  const polyline = L.polyline(latlngs, { color: '#2563eb', weight: 4, opacity: 0.8, dashArray: '10,6' }).addTo(routeMap);
+  routeLayer.push(polyline);
+
+  const stopIcon = (idx, type) => L.divIcon({
+    html: `<div class="map-icon-stop ${type === 'warehouse' ? 'warehouse' : ''}">${idx}</div>`,
+    className: '', iconSize: [30, 30], iconAnchor: [15, 30]
+  });
+
+  data.stops.forEach((stop, idx) => {
+    const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon(idx, stop.type) }).addTo(routeMap);
+    const label = stop.type === 'warehouse' ? `<b>Склад (старт)</b>` : `<b>Остановка #${idx}</b>`;
+    marker.bindPopup(`${label}<br>${stop.address}`);
+    routeLayer.push(marker);
+  });
+
+  if (latlngs.length) routeMap.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+}
+
+function showRouteResult(data) {
+  document.getElementById('routeResultPanel').classList.remove('d-none');
+  document.getElementById('totalDist').textContent = data.total_distance.toFixed(2);
+
+  const list = document.getElementById('stopsList');
+  list.innerHTML = data.stops.map((s, i) => {
+    const icon = s.type === 'warehouse' ? '🏭' : '📦';
+    return `<li class="mb-1">${icon} <strong>${i === 0 ? 'Старт: ' : ''}${s.address}</strong>
+      ${s.type === 'delivery' ? `<br><small class="text-muted">Заказ #${s.order_id}</small>` : ''}</li>`;
+  }).join('');
+}
+
+async function confirmRoute() {
+  if (!currentRouteData) return;
+  const btn = document.getElementById('confirmBtn');
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Сохранение…';
+  btn.disabled = true;
+
+  const now = new Date().toLocaleDateString('ru-RU');
+  const payload = {
+    name: `Маршрут от ${now}`,
+    total_distance: currentRouteData.total_distance,
+    stops: currentRouteData.stops,
+  };
+
+  const res = await apiFetch('/api/routes', { method: 'POST', body: JSON.stringify(payload) });
+  if (res) {
+    showToast('Маршрут подтверждён и сохранён!', 'success');
+    setTimeout(() => { window.location.href = '/routes'; }, 1200);
+  } else {
+    btn.innerHTML = '<i class="bi bi-check2-all me-2"></i>Подтвердить маршрут';
+    btn.disabled = false;
+  }
+}
+
+init();
+</script>
+{% endblock %}

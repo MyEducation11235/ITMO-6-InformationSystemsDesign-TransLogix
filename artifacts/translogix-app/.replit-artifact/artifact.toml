@@ -1,0 +1,21 @@
+kind = "web"
+previewPath = "/"
+title = "TransLogix"
+version = "1.0.0"
+id = "artifacts/translogix-app"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/", "/api" ]
+localPort = 5000
+
+[services.development]
+run = "python /home/runner/workspace/translogix/app.py"
+
+[services.env]
+PORT = "5000"

@@ -1,0 +1,15 @@
+kind = "web"
+previewPath = "/"
+title = "TransLogix"
+version = "1.0.0"
+
+[[services]]
+localPort = 5000
+name = "TransLogix App"
+paths = ["/"]
+
+[services.development]
+run = "cd translogix && python app.py"
+
+[services.env]
+PORT = "5000"
