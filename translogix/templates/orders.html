@@ -51,7 +51,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <div class="row g-3">
+        <div class="row g-3 mb-3">
           <div class="col-md-6">
             <label class="form-label">Товар <span class="text-danger">*</span></label>
             <select class="form-select" id="oProduct"></select>
@@ -64,15 +64,35 @@
             <label class="form-label">Адрес доставки <span class="text-danger">*</span></label>
             <input type="text" class="form-control" id="oAddress" placeholder="Москва, ул. Примерная, 1" />
           </div>
-          <div class="col-md-6">
-            <label class="form-label">Широта (lat) <span class="text-danger">*</span></label>
-            <input type="number" step="0.0001" class="form-control" id="oLat" placeholder="55.7558" />
+        </div>
+
+        <!-- Coordinate inputs + map picker -->
+        <div class="mb-1">
+          <label class="form-label">Координаты точки доставки <span class="text-danger">*</span>
+            <small class="text-muted fw-normal ms-1">— введите вручную или кликните на карте</small>
+          </label>
+        </div>
+        <div class="row g-2 mb-2">
+          <div class="col">
+            <input type="number" step="0.000001" class="form-control" id="oLat" placeholder="55.755800"
+              oninput="syncOrderPickerFromInputs()" />
+            <div class="form-text">Широта (lat)</div>
           </div>
-          <div class="col-md-6">
-            <label class="form-label">Долгота (lon) <span class="text-danger">*</span></label>
-            <input type="number" step="0.0001" class="form-control" id="oLon" placeholder="37.6173" />
+          <div class="col">
+            <input type="number" step="0.000001" class="form-control" id="oLon" placeholder="37.617300"
+              oninput="syncOrderPickerFromInputs()" />
+            <div class="form-text">Долгота (lon)</div>
           </div>
         </div>
+        <!-- Map picker -->
+        <div class="rounded border overflow-hidden mb-1" style="height:260px;position:relative;">
+          <div id="oPickerMap" style="height:100%;width:100%;"></div>
+          <div class="position-absolute bottom-0 start-0 m-2 px-2 py-1 rounded"
+               style="background:rgba(255,255,255,.85);font-size:.75rem;pointer-events:none;z-index:1000;">
+            <i class="bi bi-cursor me-1 text-primary"></i>Кликните, чтобы указать место доставки
+          </div>
+        </div>
+
         <div id="orderFormError" class="alert alert-danger d-none mt-3"></div>
       </div>
       <div class="modal-footer">
@@ -87,7 +107,9 @@
 {% block scripts %}
 <script>
 let ordersData = [], selectedOrders = new Set();
+let oPickerMap = null, oPickerMarker = null;
 
+/* ── Orders list ── */
 async function loadOrders() {
   const status = document.getElementById('statusFilter').value;
   const url = status ? `/api/orders?status=${status}` : '/api/orders';
@@ -101,7 +123,7 @@ function renderOrders() {
     tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">Нет заказов</td></tr>'; return;
   }
   tbody.innerHTML = ordersData.map(o => {
-    const checked = selectedOrders.has(o.id);
+    const checked  = selectedOrders.has(o.id);
     const canSelect = o.status === 'new';
     return `<tr class="${checked ? 'table-primary' : ''}">
       <td><input type="checkbox" class="order-cb" value="${o.id}" ${checked ? 'checked' : ''} ${!canSelect ? 'disabled' : ''} onchange="toggleOrder(${o.id}, this.checked)" /></td>
@@ -146,26 +168,70 @@ function goToBuildRoute() {
   window.location.href = '/route-builder';
 }
 
+/* ── Order picker map ── */
+function initOrderPickerMap() {
+  if (oPickerMap) { oPickerMap.remove(); oPickerMap = null; oPickerMarker = null; }
+
+  oPickerMap = L.map('oPickerMap').setView([55.75, 37.62], 10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(oPickerMap);
+
+  oPickerMap.on('click', e => {
+    if (oPickerMarker) {
+      oPickerMarker.setLatLng(e.latlng);
+    } else {
+      oPickerMarker = L.marker(e.latlng, { draggable: true }).addTo(oPickerMap);
+      oPickerMarker.on('dragend', () => setOrderCoords(oPickerMarker.getLatLng()));
+    }
+    setOrderCoords(e.latlng);
+  });
+}
+
+function setOrderCoords(latlng) {
+  document.getElementById('oLat').value = latlng.lat.toFixed(6);
+  document.getElementById('oLon').value = latlng.lng.toFixed(6);
+}
+
+function syncOrderPickerFromInputs() {
+  const lat = parseFloat(document.getElementById('oLat').value);
+  const lon = parseFloat(document.getElementById('oLon').value);
+  if (isNaN(lat) || isNaN(lon) || !oPickerMap) return;
+  if (oPickerMarker) {
+    oPickerMarker.setLatLng([lat, lon]);
+  } else {
+    oPickerMarker = L.marker([lat, lon], { draggable: true }).addTo(oPickerMap);
+    oPickerMarker.on('dragend', () => setOrderCoords(oPickerMarker.getLatLng()));
+  }
+  oPickerMap.setView([lat, lon], oPickerMap.getZoom());
+}
+
+/* ── Modal open ── */
 async function openOrderModal() {
   const products = await apiFetch('/api/products');
   const pSel = document.getElementById('oProduct');
   pSel.innerHTML = products.map(p => `<option value="${p.id}">${p.name} (${p.unit})</option>`).join('');
-  document.getElementById('oQty').value = '';
+  document.getElementById('oQty').value     = '';
   document.getElementById('oAddress').value = '';
-  document.getElementById('oLat').value = '';
-  document.getElementById('oLon').value = '';
+  document.getElementById('oLat').value     = '';
+  document.getElementById('oLon').value     = '';
   document.getElementById('orderFormError').classList.add('d-none');
-  new bootstrap.Modal(document.getElementById('orderModal')).show();
+
+  const modal = new bootstrap.Modal(document.getElementById('orderModal'));
+  modal.show();
+
+  document.getElementById('orderModal').addEventListener('shown.bs.modal', function handler() {
+    initOrderPickerMap();
+    this.removeEventListener('shown.bs.modal', handler);
+  });
 }
 
 async function saveOrder() {
   const errEl = document.getElementById('orderFormError');
   const body = {
-    product_id: parseInt(document.getElementById('oProduct').value),
-    quantity: parseFloat(document.getElementById('oQty').value),
+    product_id:       parseInt(document.getElementById('oProduct').value),
+    quantity:         parseFloat(document.getElementById('oQty').value),
     delivery_address: document.getElementById('oAddress').value.trim(),
-    delivery_lat: parseFloat(document.getElementById('oLat').value),
-    delivery_lon: parseFloat(document.getElementById('oLon').value),
+    delivery_lat:     parseFloat(document.getElementById('oLat').value),
+    delivery_lon:     parseFloat(document.getElementById('oLon').value),
   };
   if (!body.delivery_address || isNaN(body.quantity) || isNaN(body.delivery_lat) || isNaN(body.delivery_lon)) {
     errEl.textContent = 'Заполните все обязательные поля корректно.'; errEl.classList.remove('d-none'); return;
