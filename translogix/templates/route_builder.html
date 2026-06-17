@@ -277,16 +277,16 @@ function showResultPanel(data) {
     const warehouses = route.stops.filter(s => s.type === 'warehouse' || s.type === 'warehouse_return');
 
     const stopRows = route.stops.map((s, i) => {
-      if (s.type === 'warehouse') {
+      if (s.type === 'warehouse_return') {
+        return `<li class="mb-1">🏭 <strong>Возврат на склад:</strong> ${s.address}</li>`;
+      }
+      if (s.type === 'warehouse' && s.is_home) {
         return `<li class="mb-1">🏭 <strong>Старт: ${s.address}</strong> <small class="text-muted">(${s.name})</small></li>`;
       }
-      if (s.type === 'warehouse_return') {
-        return `<li class="mb-1">🏭 <strong>Возврат: ${s.address}</strong></li>`;
-      }
       if (s.type === 'warehouse') {
-        return `<li class="mb-1">📦 <strong>Погрузка:</strong> ${s.address} <small class="text-muted">(${s.name})</small></li>`;
+        return `<li class="mb-1">📦 <strong>Погрузка на складе: ${s.address}</strong> <small class="text-muted">(${s.name})</small></li>`;
       }
-      return `<li class="mb-1">📦 ${s.address} <small class="text-muted">— Заказ #${s.order_id}</small></li>`;
+      return `<li class="mb-1">🚚 ${s.address} <small class="text-muted">— Заказ #${s.order_id}</small></li>`;
     }).join('');
 
     html += `<div class="card mb-2" style="border-left:4px solid ${color}">

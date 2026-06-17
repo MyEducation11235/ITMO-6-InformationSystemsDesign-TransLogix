@@ -247,10 +247,14 @@ def create_routes_batch():
     """
     data = request.get_json(silent=True) or {}
     routes_data = data.get("routes", [])
-    assignment  = {int(k): int(v) for k, v in data.get("assignment", {}).items()}
 
     if not routes_data:
         return jsonify({"error": "Нет маршрутов для сохранения"}), 400
+
+    # assignment format from optimizer: {str(order_id): [[wh_id, qty], ...]}
+    assignment_norm: dict[int, list] = {
+        int(k): v for k, v in data.get("assignment", {}).items()
+    }
 
     # Collect all orders for pre-check
     all_order_ids = []
@@ -259,28 +263,29 @@ def create_routes_batch():
     all_orders = Order.query.filter(Order.id.in_(all_order_ids)).all()
     orders_map = {o.id: o for o in all_orders}
 
-    # ── Stock check per source warehouse ─────────────────────────────
+    # ── Stock check per (source_warehouse, product) ───────────────────
     from collections import defaultdict
     needed: dict = defaultdict(lambda: defaultdict(float))  # wh_id -> {pid -> qty}
     for o in all_orders:
-        src_wh = assignment.get(o.id)
-        if src_wh:
-            needed[src_wh][o.product_id] += o.quantity
+        sources = assignment_norm.get(o.id, [])
+        for (wh_id, qty) in sources:
+            needed[wh_id][o.product_id] += qty
 
     insufficient = []
     for wh_id, products in needed.items():
+        wh_obj = db.session.get(Warehouse, wh_id)
         for pid, total_req in products.items():
             stock = Stock.query.filter_by(warehouse_id=wh_id, product_id=pid).first()
             avail = stock.quantity if stock else 0
             if avail < total_req:
-                wh   = db.session.get(Warehouse, wh_id)
-                prod = orders_map[next(
-                    o_id for o_id, o in orders_map.items() if o.product_id == pid
-                )].product
+                # find a product name from orders
+                prod_name = next(
+                    (o.product.name for o in all_orders
+                     if o.product_id == pid and o.product), str(pid)
+                )
                 insufficient.append(
-                    f"Склад «{wh.name if wh else wh_id}», "
-                    f"«{prod.name if prod else pid}»: "
-                    f"требуется {total_req}, доступно {avail}"
+                    f"Склад «{wh_obj.name if wh_obj else wh_id}», "
+                    f"«{prod_name}»: требуется {total_req}, доступно {avail}"
                 )
     if insufficient:
         return jsonify({"error": "Недостаточно товаров",
@@ -320,14 +325,14 @@ def create_routes_batch():
 
         saved_routes.append(route)
 
-    # ── Deduct stock per source warehouse ────────────────────────────
+    # ── Deduct stock per source warehouse (split-aware) ──────────────
     for o in all_orders:
-        src_wh = assignment.get(o.id)
-        if src_wh:
-            stock = Stock.query.filter_by(warehouse_id=src_wh,
+        sources = assignment_norm.get(o.id, [])
+        for (wh_id, qty) in sources:
+            stock = Stock.query.filter_by(warehouse_id=wh_id,
                                           product_id=o.product_id).first()
             if stock:
-                stock.quantity = max(0, stock.quantity - o.quantity)
+                stock.quantity = max(0, stock.quantity - qty)
 
     db.session.commit()
     return jsonify([r.to_dict() for r in saved_routes]), 201
