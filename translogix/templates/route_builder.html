@@ -101,26 +101,113 @@ async function init() {
   initMap();
 }
 
-// ── Orders ───────────────────────────────────────────────────────────
+// ── Orders — collapsible tree grouped by product ──────────────────────
 function renderOrderCheckList() {
   const c = document.getElementById('orderCheckList');
   if (!ordersData.length) {
     c.innerHTML = '<div class="text-muted text-center py-3">Нет новых заказов</div>'; return;
   }
-  c.innerHTML = ordersData.map(o => `
-    <div class="form-check border-bottom pb-1 mb-1 px-2">
-      <input class="form-check-input" type="checkbox" id="oc${o.id}" value="${o.id}"
-        ${selectedOrderIds.has(o.id) ? 'checked' : ''}
-        onchange="toggleOrderSel(${o.id}, this.checked)" />
-      <label class="form-check-label" for="oc${o.id}">
-        <strong>#${o.id}</strong> ${o.product_name} × ${o.quantity}<br>
-        <small class="text-muted">${o.delivery_address}</small>
-      </label>
-    </div>`).join('');
+
+  // Group by product
+  const groups = {};
+  ordersData.forEach(o => {
+    const key = o.product_id ?? o.product_name;
+    if (!groups[key]) groups[key] = { name: o.product_name, unit: o.product_unit || '', orders: [] };
+    groups[key].orders.push(o);
+  });
+
+  c.innerHTML = Object.entries(groups).map(([pid, g], gi) => {
+    const collapseId = `grp_${gi}`;
+    const totalQty   = g.orders.reduce((s, o) => s + o.quantity, 0);
+    const checkedIds = g.orders.filter(o => selectedOrderIds.has(o.id)).map(o => o.id);
+    const allChk     = checkedIds.length === g.orders.length;
+    const someChk    = checkedIds.length > 0 && !allChk;
+    const groupIds   = g.orders.map(o => o.id).join(',');
+
+    const rows = g.orders.map(o => {
+      const chk = selectedOrderIds.has(o.id);
+      return `<div class="d-flex align-items-start gap-2 py-1 px-2 border-bottom"
+                   style="padding-left:2rem!important;">
+        <input class="form-check-input flex-shrink-0 mt-1" type="checkbox"
+               id="oc${o.id}" value="${o.id}"
+               ${chk ? 'checked' : ''}
+               onchange="toggleOrderSel(${o.id}, this.checked, '${collapseId}', [${groupIds}])" />
+        <label class="form-check-label w-100" for="oc${o.id}" style="cursor:pointer;">
+          <span class="fw-semibold">#${o.id}</span>
+          <span class="ms-1">× ${o.quantity} ${g.unit}</span><br>
+          <small class="text-muted">${o.delivery_address}</small>
+        </label>
+      </div>`;
+    }).join('');
+
+    return `
+      <div class="border-bottom">
+        <!-- Group header -->
+        <div class="d-flex align-items-center gap-2 px-2 py-2" style="background:var(--bs-light);">
+          <input class="form-check-input flex-shrink-0" type="checkbox"
+                 id="grpChk_${gi}"
+                 ${allChk ? 'checked' : ''}
+                 data-indeterminate="${someChk}"
+                 onchange="toggleGroupSel([${groupIds}], this.checked, '${collapseId}')" />
+          <label class="form-check-label fw-semibold flex-grow-1 mb-0" for="grpChk_${gi}"
+                 style="cursor:pointer;">
+            ${g.name}
+            <span class="badge bg-secondary ms-1 fw-normal">${g.orders.length} зак.</span>
+            <span class="text-muted fw-normal ms-1" style="font-size:.8rem;">итого ${totalQty} ${g.unit}</span>
+          </label>
+          <button class="btn btn-sm btn-link text-secondary p-0 border-0"
+                  onclick="toggleCollapse('${collapseId}')"
+                  id="chevron_${collapseId}"
+                  title="Свернуть/развернуть">
+            <i class="bi bi-chevron-down" id="chevronIcon_${collapseId}"></i>
+          </button>
+        </div>
+        <!-- Children -->
+        <div id="${collapseId}">${rows}</div>
+      </div>`;
+  }).join('');
+
+  // Apply indeterminate state after render
+  Object.entries(groups).forEach(([pid, g], gi) => {
+    const chkEl = document.getElementById(`grpChk_${gi}`);
+    if (chkEl && chkEl.dataset.indeterminate === 'true') chkEl.indeterminate = true;
+  });
 }
 
-function toggleOrderSel(id, checked) {
+function toggleCollapse(collapseId) {
+  const el  = document.getElementById(collapseId);
+  const ico = document.getElementById('chevronIcon_' + collapseId);
+  const hidden = el.style.display === 'none';
+  el.style.display  = hidden ? '' : 'none';
+  ico.className = hidden ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
+}
+
+function toggleOrderSel(id, checked, collapseId, groupIds) {
   if (checked) selectedOrderIds.add(id); else selectedOrderIds.delete(id);
+  _syncGroupCheckbox(collapseId, groupIds);
+}
+
+function toggleGroupSel(ids, checked, collapseId) {
+  ids.forEach(id => {
+    if (checked) selectedOrderIds.add(id); else selectedOrderIds.delete(id);
+    const el = document.getElementById('oc' + id);
+    if (el) el.checked = checked;
+  });
+  _syncGroupCheckbox(collapseId, ids);
+}
+
+function _syncGroupCheckbox(collapseId, groupIds) {
+  // Find the group's checkbox via parent element
+  const container = document.getElementById(collapseId);
+  if (!container) return;
+  const header   = container.previousElementSibling;
+  if (!header) return;
+  const groupChk = header.querySelector('input[type=checkbox]');
+  if (!groupChk) return;
+  const checked = groupIds.filter(id => selectedOrderIds.has(id)).length;
+  const total   = groupIds.length;
+  groupChk.checked       = checked === total;
+  groupChk.indeterminate = checked > 0 && checked < total;
 }
 
 function selectAllOrders() {
