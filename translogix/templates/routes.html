@@ -1,51 +1,67 @@
 {% extends "base.html" %}
 {% block title %}Маршруты{% endblock %}
-{% block page_title %}Подтверждённые маршруты{% endblock %}
+{% block page_title %}Маршруты{% endblock %}
 
 {% block content %}
 <div class="row g-3">
-  <!-- Routes list -->
+
+  <!-- ── Left: Routes list ── -->
   <div class="col-xl-4">
     <div class="card">
       <div class="card-header d-flex align-items-center justify-content-between">
-        <span><i class="bi bi-signpost-2 me-2 text-primary"></i>Маршруты</span>
+        <span><i class="bi bi-signpost-2 me-2 text-primary"></i>Список маршрутов</span>
         <a href="/route-builder" class="btn btn-sm btn-primary">
           <i class="bi bi-plus-lg me-1"></i>Новый
         </a>
       </div>
-      <div id="routesList" class="list-group list-group-flush" style="max-height:520px;overflow-y:auto;">
+
+      <!-- Status filter -->
+      <div class="p-2 border-bottom">
+        <select class="form-select form-select-sm" id="routeStatusFilter" onchange="loadRoutes()">
+          <option value="">Все статусы</option>
+          <option value="pending">Ожидают водителя</option>
+          <option value="in_progress">В процессе</option>
+          <option value="completed">Завершённые</option>
+          <option value="requires_intervention">Требуют вмешательства</option>
+        </select>
+      </div>
+
+      <div id="routesList" class="list-group list-group-flush" style="max-height:500px;overflow-y:auto;">
         <div class="list-group-item text-muted text-center py-3">Загрузка…</div>
       </div>
     </div>
   </div>
 
-  <!-- Route detail & map -->
+  <!-- ── Right: Detail + map ── -->
   <div class="col-xl-8">
-    <div class="card mb-3" id="routeDetailCard" style="display:none!important">
-      <div class="card-header d-flex align-items-center justify-content-between">
-        <span id="routeDetailTitle"><i class="bi bi-map me-2 text-primary"></i>Детали маршрута</span>
-        <span class="badge bg-success"><i class="bi bi-check2 me-1"></i>Подтверждён</span>
+
+    <!-- Route detail card -->
+    <div class="card mb-3 d-none" id="routeDetailCard">
+      <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <span id="routeDetailTitle" class="fw-semibold"></span>
+        <div class="d-flex align-items-center gap-2" id="routeDetailActions"></div>
       </div>
+
+      <!-- Stats row -->
       <div class="card-body pb-0">
-        <div class="row g-2 mb-3">
-          <div class="col-auto">
-            <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
-              <i class="bi bi-arrows-move me-1"></i>
-              <span id="detailDist">—</span> км
-            </span>
-          </div>
-          <div class="col-auto">
-            <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">
-              <i class="bi bi-flag me-1"></i>
-              <span id="detailStops">—</span> остановок
-            </span>
-          </div>
+        <div class="d-flex gap-2 mb-3 flex-wrap">
+          <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+            <i class="bi bi-arrows-move me-1"></i><span id="detailDist">—</span> км
+          </span>
+          <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">
+            <i class="bi bi-flag me-1"></i><span id="detailStops">—</span> остановок
+          </span>
+          <span id="detailStatusBadge" class="badge"></span>
         </div>
-        <ol id="detailStopsList" style="font-size:.9rem;"></ol>
+
+        <!-- Stops list (driver view) -->
+        <div id="driverStopsPanel"></div>
       </div>
     </div>
+
+    <!-- Map -->
     <div class="card">
-      <div class="card-header"><i class="bi bi-map me-2 text-primary"></i>Карта</div>
+      <div class="card-header"><i class="bi bi-map me-2 text-primary"></i>Карта маршрута</div>
       <div class="card-body p-0">
         <div id="routeDetailMap" style="height:420px;border-radius:0 0 .5rem .5rem;"></div>
       </div>
@@ -57,18 +73,45 @@
 {% block scripts %}
 <script>
 let detailMap = null, detailLayer = [];
+let currentRouteId = null;
 
+// ── Status helpers ────────────────────────────────────────────────────
+const STATUS_LABEL = {
+  pending:               'Ожидает водителя',
+  in_progress:           'В процессе',
+  completed:             'Завершён',
+  requires_intervention: 'Требуется вмешательство',
+};
+const STATUS_COLOR = {
+  pending:               'secondary',
+  in_progress:           'primary',
+  completed:             'success',
+  requires_intervention: 'danger',
+};
+const RESULT_ICON = {
+  success: '<i class="bi bi-check-circle-fill text-success"></i>',
+  failure: '<i class="bi bi-x-circle-fill text-danger"></i>',
+};
+
+// ── Load routes list ──────────────────────────────────────────────────
 async function loadRoutes() {
-  const routes = await apiFetch('/api/routes');
+  const status = document.getElementById('routeStatusFilter').value;
+  const url = status ? `/api/routes?status=${status}` : '/api/routes';
+  const routes = await apiFetch(url);
   const container = document.getElementById('routesList');
 
   if (!routes || !routes.length) {
-    container.innerHTML = '<div class="list-group-item text-muted text-center py-4"><i class="bi bi-signpost-2 d-block fs-2 mb-2 text-muted"></i>Нет маршрутов.<br><a href="/route-builder">Создать первый</a></div>';
+    container.innerHTML = `<div class="list-group-item text-muted text-center py-4">
+      <i class="bi bi-signpost-2 d-block fs-2 mb-2"></i>
+      Нет маршрутов.<br><a href="/route-builder">Создать первый</a></div>`;
     return;
   }
 
-  container.innerHTML = routes.map(r => `
-    <button class="list-group-item list-group-item-action" onclick="showRoute(${r.id})">
+  container.innerHTML = routes.map(r => {
+    const color = STATUS_COLOR[r.status] || 'secondary';
+    const label = STATUS_LABEL[r.status] || r.status;
+    const active = r.id === currentRouteId ? 'active' : '';
+    return `<button class="list-group-item list-group-item-action ${active}" onclick="showRoute(${r.id})">
       <div class="d-flex justify-content-between align-items-start">
         <div>
           <strong>${r.name}</strong>
@@ -78,55 +121,228 @@ async function loadRoutes() {
           </div>
         </div>
         <div class="text-end">
-          <span class="badge ${r.confirmed ? 'bg-success' : 'bg-secondary'}">${r.confirmed ? 'Подтверждён' : 'Черновик'}</span>
+          <span class="badge bg-${color}">${label}</span>
           <div class="text-muted small mt-1">${formatDate(r.created_at)}</div>
         </div>
       </div>
-    </button>`).join('');
+    </button>`;
+  }).join('');
 
-  // Show the first route by default
-  if (routes.length) showRoute(routes[0].id);
+  if (routes.length && !currentRouteId) showRoute(routes[0].id);
 }
 
+// ── Show route detail ─────────────────────────────────────────────────
 async function showRoute(id) {
+  currentRouteId = id;
   const route = await apiFetch(`/api/routes/${id}`);
   if (!route) return;
 
-  document.getElementById('routeDetailCard').style.display = '';
-  document.getElementById('routeDetailTitle').innerHTML = `<i class="bi bi-map me-2 text-primary"></i>${route.name}`;
-  document.getElementById('detailDist').textContent = route.total_distance.toFixed(2);
+  document.getElementById('routeDetailCard').classList.remove('d-none');
+  document.getElementById('routeDetailTitle').innerHTML =
+    `<i class="bi bi-map me-2 text-primary"></i>${route.name}`;
+  document.getElementById('detailDist').textContent  = route.total_distance.toFixed(2);
   document.getElementById('detailStops').textContent = route.stops.length;
 
-  const list = document.getElementById('detailStopsList');
-  list.innerHTML = route.stops.map((s, i) => {
-    const icon = s.stop_type === 'warehouse' ? '🏭' : '📦';
-    return `<li class="mb-1">${icon} <strong>${s.address}</strong>
-      ${s.stop_type === 'delivery' ? `<br><small class="text-muted">Заказ #${s.order_id}</small>` : ''}</li>`;
-  }).join('');
+  // Status badge
+  const color = STATUS_COLOR[route.status] || 'secondary';
+  const label = STATUS_LABEL[route.status] || route.status;
+  const badge = document.getElementById('detailStatusBadge');
+  badge.className = `badge bg-${color}`;
+  badge.textContent = label;
+
+  // Action buttons
+  renderActions(route);
+
+  // Driver stops panel
+  renderDriverStops(route);
 
   // Map
+  drawDetailMap(route);
+}
+
+// ── Actions (operator / driver buttons) ──────────────────────────────
+function renderActions(route) {
+  const panel = document.getElementById('routeDetailActions');
+  panel.innerHTML = '';
+
+  if (route.status === 'pending') {
+    panel.innerHTML = `
+      <button class="btn btn-sm btn-primary" onclick="startRoute(${route.id})">
+        <i class="bi bi-play-fill me-1"></i>Начать маршрут
+      </button>
+      <button class="btn btn-sm btn-outline-danger ms-1" onclick="deleteRoute(${route.id})">
+        <i class="bi bi-trash"></i>
+      </button>`;
+  } else if (route.status === 'completed') {
+    panel.innerHTML = `<span class="text-success"><i class="bi bi-check2-all me-1"></i>Все доставки выполнены</span>`;
+  } else if (route.status === 'requires_intervention') {
+    panel.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Оператор должен проверить</span>`;
+  }
+}
+
+// ── Driver stops panel ───────────────────────────────────────────────
+function renderDriverStops(route) {
+  const panel = document.getElementById('driverStopsPanel');
+  const deliveryStops = route.stops.filter(s => s.stop_type === 'delivery');
+
+  if (!deliveryStops.length) { panel.innerHTML = ''; return; }
+
+  const isActive = route.status === 'in_progress';
+
+  const rows = route.stops.map((s, i) => {
+    if (s.stop_type === 'warehouse') {
+      return `<li class="list-group-item d-flex align-items-center gap-2 py-2">
+        <span class="badge bg-dark rounded-pill">${i}</span>
+        <span class="me-auto"><i class="bi bi-building me-1 text-secondary"></i>${s.address}</span>
+        <span class="badge bg-secondary">Склад</span>
+      </li>`;
+    }
+
+    const info = s.order_info
+      ? `${s.order_info.product_name} × ${s.order_info.quantity} ${s.order_info.product_unit || ''}`
+      : `Заказ #${s.order_id}`;
+
+    let resultHtml = '';
+    if (s.delivery_result === 'success') {
+      resultHtml = `<span class="badge bg-success"><i class="bi bi-check-lg me-1"></i>Выполнен</span>`;
+    } else if (s.delivery_result === 'failure') {
+      resultHtml = `<span class="badge bg-danger"><i class="bi bi-x-lg me-1"></i>Не выполнен</span>`;
+    } else if (isActive) {
+      resultHtml = `
+        <button class="btn btn-sm btn-success py-0 px-2" onclick="markStop(${route.id},${s.id},'success')" title="Доставлено">
+          <i class="bi bi-check-lg"></i>
+        </button>
+        <button class="btn btn-sm btn-danger py-0 px-2 ms-1" onclick="markStop(${route.id},${s.id},'failure')" title="Не доставлено">
+          <i class="bi bi-x-lg"></i>
+        </button>`;
+    } else {
+      resultHtml = `<span class="badge bg-secondary">Ожидает</span>`;
+    }
+
+    return `<li class="list-group-item d-flex align-items-center gap-2 py-2 flex-wrap">
+      <span class="badge bg-primary rounded-pill">${i}</span>
+      <span class="me-auto">
+        <div>${s.address}</div>
+        <small class="text-muted">${info}</small>
+      </span>
+      <div class="d-flex gap-1">${resultHtml}</div>
+    </li>`;
+  }).join('');
+
+  let header = '';
+  if (route.status === 'in_progress') {
+    const done  = deliveryStops.filter(s => s.delivery_result).length;
+    const total = deliveryStops.length;
+    const pct   = Math.round(done / total * 100);
+    header = `<div class="mb-2">
+      <div class="d-flex justify-content-between mb-1">
+        <small class="text-muted">Прогресс доставки</small>
+        <small class="text-muted">${done}/${total}</small>
+      </div>
+      <div class="progress" style="height:6px;">
+        <div class="progress-bar bg-success" style="width:${pct}%"></div>
+      </div>
+    </div>`;
+  }
+
+  panel.innerHTML = `${header}<ul class="list-group list-group-flush border rounded mb-3">${rows}</ul>`;
+}
+
+// ── Driver API calls ──────────────────────────────────────────────────
+async function startRoute(id) {
+  const res = await apiFetch(`/api/routes/${id}/start`, { method: 'PATCH' });
+  if (res) { showToast('Маршрут начат!', 'success'); refreshDetail(id); loadRoutes(); }
+}
+
+async function markStop(routeId, stopId, result) {
+  const res = await apiFetch(`/api/routes/${routeId}/stops/${stopId}/result`, {
+    method: 'PATCH',
+    body: JSON.stringify({ result }),
+  });
+  if (res) {
+    const msg = result === 'success' ? 'Доставка выполнена ✓' : 'Доставка не выполнена ✗';
+    showToast(msg, result === 'success' ? 'success' : 'warning');
+    // Update status badge + stops panel immediately from response
+    renderActions(res);
+    renderDriverStops(res);
+    updateMapMarkers(res);
+    // Refresh list to update badges
+    loadRoutes();
+    // If route just completed, refresh detail fully
+    if (res.status === 'completed' || res.status === 'requires_intervention') {
+      showToast(`Маршрут: ${STATUS_LABEL[res.status]}`, res.status === 'completed' ? 'success' : 'danger');
+    }
+  }
+}
+
+async function deleteRoute(id) {
+  if (!confirm('Удалить маршрут?')) return;
+  await apiFetch(`/api/routes/${id}`, { method: 'DELETE' });
+  currentRouteId = null;
+  document.getElementById('routeDetailCard').classList.add('d-none');
+  showToast('Маршрут удалён', 'warning');
+  loadRoutes();
+}
+
+async function refreshDetail(id) {
+  const route = await apiFetch(`/api/routes/${id}`);
+  if (!route) return;
+  const badge = document.getElementById('detailStatusBadge');
+  badge.className = `badge bg-${STATUS_COLOR[route.status] || 'secondary'}`;
+  badge.textContent = STATUS_LABEL[route.status] || route.status;
+  renderActions(route);
+  renderDriverStops(route);
+  updateMapMarkers(route);
+}
+
+// ── Map ───────────────────────────────────────────────────────────────
+function getStopColor(stop) {
+  if (stop.stop_type === 'warehouse') return '#374151';
+  if (stop.delivery_result === 'success') return '#16a34a';
+  if (stop.delivery_result === 'failure') return '#dc2626';
+  return '#2563eb';
+}
+
+function drawDetailMap(route) {
   if (!detailMap) {
     detailMap = L.map('routeDetailMap').setView([55.75, 37.62], 10);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(detailMap);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+      { attribution: '© OpenStreetMap' }).addTo(detailMap);
   }
   detailLayer.forEach(l => detailMap.removeLayer(l));
   detailLayer = [];
 
   const latlngs = route.stops.map(s => [s.lat, s.lon]);
-  const poly = L.polyline(latlngs, { color: '#16a34a', weight: 4, opacity: 0.85 }).addTo(detailMap);
+  const poly = L.polyline(latlngs, { color: '#2563eb', weight: 4, opacity: 0.8 }).addTo(detailMap);
   detailLayer.push(poly);
 
   route.stops.forEach((s, i) => {
+    const color = getStopColor(s);
     const icon = L.divIcon({
-      html: `<div class="map-icon-stop ${s.stop_type === 'warehouse' ? 'warehouse' : ''}">${i}</div>`,
-      className: '', iconSize: [30, 30], iconAnchor: [15, 30]
+      html: `<div class="map-icon-stop" style="background:${color};border-color:${color};">${i}</div>`,
+      className: '', iconSize: [30, 30], iconAnchor: [15, 30],
     });
+    const info = s.stop_type === 'warehouse' ? '<b>Склад (старт)</b>'
+      : `<b>Заказ #${s.order_id}</b>`;
     const m = L.marker([s.lat, s.lon], { icon }).addTo(detailMap)
-      .bindPopup(`<b>${i === 0 ? 'Старт' : 'Остановка ' + i}</b><br>${s.address}`);
+      .bindPopup(`${info}<br>${s.address}`);
     detailLayer.push(m);
   });
 
   if (latlngs.length) detailMap.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+}
+
+function updateMapMarkers(route) {
+  // Re-color existing markers without re-drawing polyline
+  const markers = detailLayer.filter(l => l instanceof L.Marker);
+  route.stops.forEach((s, i) => {
+    if (!markers[i]) return;
+    const color = getStopColor(s);
+    markers[i].setIcon(L.divIcon({
+      html: `<div class="map-icon-stop" style="background:${color};border-color:${color};">${i}</div>`,
+      className: '', iconSize: [30, 30], iconAnchor: [15, 30],
+    }));
+  });
 }
 
 loadRoutes();
