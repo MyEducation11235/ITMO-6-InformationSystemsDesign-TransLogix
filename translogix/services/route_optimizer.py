@@ -1,130 +1,354 @@
 """
 Сервис оптимизации маршрутов.
-Реализует алгоритм «ближайший сосед» (Nearest Neighbour) для задачи коммивояжёра (TSP).
+
+Функции:
+  - haversine_distance      — расстояние между двумя точками (км)
+  - nearest_neighbour_tsp   — алгоритм «ближайший сосед» для TSP
+  - optimize_route          — однодепотный маршрут (обратная совместимость)
+  - optimize_multi_warehouse — многоскладовой VRP с ограничением «погрузка до доставки»
 """
 
 import math
+from collections import defaultdict
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Базовые геофункции
+# ─────────────────────────────────────────────────────────────────────
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Вычисляет расстояние между двумя точками на Земле в километрах
-    по формуле Гаверсинуса.
-    """
-    R = 6371.0  # радиус Земли в километрах
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlam = math.radians(lon2 - lon1)
-
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def nearest_neighbour_tsp(points: list[dict]) -> tuple[list[dict], float]:
-    """
-    Алгоритм «ближайший сосед» для TSP.
-
-    Параметры:
-        points: список точек, каждая содержит {'lat', 'lon', ...}.
-                Первый элемент — стартовая точка (склад), она остаётся на месте.
-
-    Возвращает:
-        (ordered_points, total_distance_km)
-    """
     if not points:
         return [], 0.0
-
     if len(points) == 1:
         return points, 0.0
 
-    # Стартовая точка фиксирована (склад)
     start = points[0]
     unvisited = list(points[1:])
     route = [start]
-    total_distance = 0.0
+    total = 0.0
     current = start
 
     while unvisited:
-        # Найти ближайшую непосещённую точку
-        best_dist = float("inf")
-        best_idx = 0
+        best_d, best_i = float("inf"), 0
         for i, pt in enumerate(unvisited):
-            dist = haversine_distance(current["lat"], current["lon"], pt["lat"], pt["lon"])
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = i
-
-        nearest = unvisited.pop(best_idx)
-        total_distance += best_dist
+            d = haversine_distance(current["lat"], current["lon"], pt["lat"], pt["lon"])
+            if d < best_d:
+                best_d, best_i = d, i
+        nearest = unvisited.pop(best_i)
+        total += best_d
         route.append(nearest)
         current = nearest
 
-    return route, round(total_distance, 2)
+    return route, round(total, 2)
 
+
+# ─────────────────────────────────────────────────────────────────────
+# Однодепотный маршрут (обратная совместимость)
+# ─────────────────────────────────────────────────────────────────────
 
 def optimize_route(orders: list[dict], warehouse: dict) -> dict:
-    """
-    Строит оптимальный маршрут доставки.
-
-    Параметры:
-        orders:    список заказов [{'id', 'lat', 'lon', 'address', ...}]
-        warehouse: стартовый склад {'id', 'lat', 'lon', 'address', 'name'}
-
-    Возвращает:
-        {
-            'stops': [{'type': 'warehouse'|'delivery', 'id': ..., 'lat', 'lon', 'address', 'order_id', 'warehouse_id'}],
-            'total_distance': km (float)
-        }
-    """
     if not orders:
         return {"stops": [], "total_distance": 0.0}
 
-    # Собираем точки: склад первый, затем заказы
-    points = [
+    points = [{
+        "type": "warehouse", "id": warehouse["id"],
+        "lat": warehouse["lat"], "lon": warehouse["lon"],
+        "address": warehouse["address"], "name": warehouse["name"],
+        "order_id": None, "warehouse_id": warehouse["id"],
+    }]
+    for o in orders:
+        points.append({
+            "type": "delivery", "id": o["id"],
+            "lat": o["lat"], "lon": o["lon"],
+            "address": o["address"], "order_id": o["id"],
+            "warehouse_id": None,
+        })
+
+    ordered, dist = nearest_neighbour_tsp(points)
+    stops = [{"stop_order": i, "type": p["type"], "id": p["id"],
+              "lat": p["lat"], "lon": p["lon"], "address": p["address"],
+              "order_id": p.get("order_id"), "warehouse_id": p.get("warehouse_id"),
+              "name": p.get("name")} for i, p in enumerate(ordered)]
+    return {"stops": stops, "total_distance": dist}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Многоскладовой VRP с ограничением «погрузка → доставка»
+# ─────────────────────────────────────────────────────────────────────
+
+def _dist(a: dict, b: dict) -> float:
+    return haversine_distance(a["lat"], a["lon"], b["lat"], b["lon"])
+
+
+def _plan_route_with_constraints(
+    home_wh: dict,
+    orders_for_route: list[dict],
+    wh_lookup: dict,           # warehouse_id -> warehouse dict
+    assignment: dict,          # order_id -> source_warehouse_id
+) -> tuple[list[dict], float]:
+    """
+    Строит один маршрут, начинающийся и заканчивающийся в home_wh.
+    Ограничение: заказ можно доставить только после погрузки на соответствующем складе.
+
+    Возвращает (stops_list, total_distance).
+    """
+    if not orders_for_route:
+        return [], 0.0
+
+    # Какие склады нужно посетить для погрузки (помимо home)
+    pickup_needed: set[int] = set()
+    for o in orders_for_route:
+        src = assignment[o["id"]]
+        if src != home_wh["id"]:
+            pickup_needed.add(src)
+
+    loaded_wh: set[int] = {home_wh["id"]}   # уже погружены
+    remaining_pickups = set(pickup_needed)
+    remaining_deliveries = list(orders_for_route)
+
+    stops: list[dict] = []
+    current = home_wh
+    total_dist = 0.0
+
+    # Первая остановка — домашний склад
+    stops.append({
+        "type": "warehouse", "warehouse_id": home_wh["id"],
+        "lat": home_wh["lat"], "lon": home_wh["lon"],
+        "address": home_wh["address"], "name": home_wh["name"],
+        "order_id": None, "is_home": True,
+    })
+
+    while remaining_pickups or remaining_deliveries:
+        best_d = float("inf")
+        best_obj = None
+        best_kind = None
+
+        # Варианты: склады для погрузки (всегда допустимы)
+        for wh_id in remaining_pickups:
+            wh = wh_lookup[wh_id]
+            d = _dist(current, wh)
+            if d < best_d:
+                best_d, best_obj, best_kind = d, wh, "pickup"
+
+        # Варианты: доставки (допустимы если нужный склад уже загружен)
+        for o in remaining_deliveries:
+            if assignment[o["id"]] in loaded_wh:
+                d = _dist(current, o)
+                if d < best_d:
+                    best_d, best_obj, best_kind = d, o, "delivery"
+
+        # Тупик: есть доставки, но все склады для них ещё не посещены →
+        # принудительно идём к ближайшему непосещённому складу
+        if best_obj is None:
+            if remaining_pickups:
+                wh_id = min(remaining_pickups,
+                            key=lambda wid: _dist(current, wh_lookup[wid]))
+                best_obj = wh_lookup[wh_id]
+                best_d = _dist(current, best_obj)
+                best_kind = "pickup"
+            else:
+                break  # не должно случиться
+
+        total_dist += best_d
+        current = best_obj
+
+        if best_kind == "pickup":
+            remaining_pickups.discard(best_obj["id"])
+            loaded_wh.add(best_obj["id"])
+            stops.append({
+                "type": "warehouse", "warehouse_id": best_obj["id"],
+                "lat": best_obj["lat"], "lon": best_obj["lon"],
+                "address": best_obj["address"], "name": best_obj["name"],
+                "order_id": None, "is_home": False,
+            })
+        else:
+            remaining_deliveries.remove(best_obj)
+            stops.append({
+                "type": "delivery", "warehouse_id": None,
+                "lat": best_obj["lat"], "lon": best_obj["lon"],
+                "address": best_obj["address"], "name": None,
+                "order_id": best_obj["id"],
+                "source_warehouse_id": assignment[best_obj["id"]],
+            })
+
+    # Возврат на домашний склад
+    return_d = _dist(current, home_wh)
+    total_dist += return_d
+    stops.append({
+        "type": "warehouse_return", "warehouse_id": home_wh["id"],
+        "lat": home_wh["lat"], "lon": home_wh["lon"],
+        "address": home_wh["address"], "name": home_wh["name"],
+        "order_id": None, "is_home": True,
+    })
+
+    # Расставляем порядковые номера
+    for i, s in enumerate(stops):
+        s["stop_order"] = i
+
+    return stops, round(total_dist, 2)
+
+
+def _assign_orders_to_warehouses(
+    orders: list[dict],
+    warehouses: list[dict],
+    stock_map: dict,   # warehouse_id -> {product_id -> qty}
+) -> dict:
+    """
+    Жадно назначает каждый заказ на ближайший склад с достаточным остатком.
+    Возвращает {order_id: source_warehouse_id}.
+    """
+    remaining = {
+        w["id"]: defaultdict(float, stock_map.get(w["id"], {}))
+        for w in warehouses
+    }
+    assignment: dict[int, int] = {}
+
+    for o in orders:
+        candidates = [
+            w for w in warehouses
+            if remaining[w["id"]][o["product_id"]] >= o["quantity"]
+        ]
+        if not candidates:
+            raise ValueError(
+                f"Заказ #{o['id']}: на складах недостаточно товара «{o.get('product_name', '')}»"
+            )
+        best = min(candidates, key=lambda w: _dist(o, w))
+        assignment[o["id"]] = best["id"]
+        remaining[best["id"]][o["product_id"]] -= o["quantity"]
+
+    return assignment
+
+
+def optimize_multi_warehouse(
+    orders: list[dict],
+    warehouses: list[dict],
+    stock_map: dict,
+) -> dict:
+    """
+    Главная функция многоскладового VRP.
+
+    Параметры:
+        orders:     [{id, product_id, quantity, lat, lon, address, product_name}]
+        warehouses: [{id, lat, lon, address, name}]  — выбранные склады
+        stock_map:  {warehouse_id: {product_id: available_qty}}
+
+    Возвращает:
         {
-            "type": "warehouse",
-            "id": warehouse["id"],
-            "lat": warehouse["lat"],
-            "lon": warehouse["lon"],
-            "address": warehouse["address"],
-            "name": warehouse["name"],
-            "order_id": None,
-            "warehouse_id": warehouse["id"],
+            routes: [
+                {
+                    home_warehouse_id: int,
+                    home_warehouse_name: str,
+                    stops: [...],
+                    total_distance: float,
+                    order_ids: [...]
+                }
+            ],
+            total_distance: float,
+            assignment: {order_id: warehouse_id},
+            stock_checks: [...]
         }
-    ]
+    """
+    if not orders or not warehouses:
+        return {"routes": [], "total_distance": 0.0,
+                "assignment": {}, "stock_checks": []}
 
-    for order in orders:
-        points.append(
-            {
-                "type": "delivery",
-                "id": order["id"],
-                "lat": order["lat"],
-                "lon": order["lon"],
-                "address": order["address"],
-                "order_id": order["id"],
-                "warehouse_id": None,
+    wh_lookup = {w["id"]: w for w in warehouses}
+
+    # ── 1. Проверка суммарных остатков ────────────────────────────────
+    required_by_product: dict[int, float] = defaultdict(float)
+    product_meta: dict[int, dict] = {}
+    for o in orders:
+        required_by_product[o["product_id"]] += o["quantity"]
+        if o["product_id"] not in product_meta:
+            product_meta[o["product_id"]] = {
+                "name": o.get("product_name", f"ID {o['product_id']}"),
+                "unit": o.get("unit", ""),
             }
+
+    stock_checks = []
+    for pid, total_req in required_by_product.items():
+        total_avail = sum(stock_map.get(w["id"], {}).get(pid, 0) for w in warehouses)
+        wh_detail = [
+            {"warehouse_name": wh_lookup[w["id"]]["name"],
+             "available": stock_map.get(w["id"], {}).get(pid, 0)}
+            for w in warehouses
+        ]
+        stock_checks.append({
+            "product_name": product_meta[pid]["name"],
+            "unit":         product_meta[pid]["unit"],
+            "required":     total_req,
+            "available":    total_avail,
+            "ok":           total_avail >= total_req,
+            "by_warehouse": wh_detail,
+        })
+
+    # ── 2. Назначение заказов на склады ───────────────────────────────
+    try:
+        assignment = _assign_orders_to_warehouses(orders, warehouses, stock_map)
+    except ValueError as exc:
+        return {"routes": [], "total_distance": 0.0,
+                "assignment": {}, "stock_checks": stock_checks,
+                "error": str(exc)}
+
+    # ── 3. Перебор конфигураций маршрутов ────────────────────────────
+    # orders grouped by source warehouse
+    orders_by_wh: dict[int, list] = defaultdict(list)
+    for o in orders:
+        orders_by_wh[assignment[o["id"]]].append(o)
+
+    active_whs = [w for w in warehouses if w["id"] in orders_by_wh]
+
+    best_routes = None
+    best_total  = float("inf")
+
+    # Конфигурация A: отдельный маршрут на каждый склад-источник
+    config_a: list[dict] = []
+    dist_a = 0.0
+    for wh in active_whs:
+        stops, d = _plan_route_with_constraints(
+            wh, orders_by_wh[wh["id"]], wh_lookup, assignment
         )
+        config_a.append({
+            "home_warehouse_id":   wh["id"],
+            "home_warehouse_name": wh["name"],
+            "stops":               stops,
+            "total_distance":      d,
+            "order_ids":           [o["id"] for o in orders_by_wh[wh["id"]]],
+        })
+        dist_a += d
 
-    ordered_points, total_distance = nearest_neighbour_tsp(points)
+    if dist_a < best_total:
+        best_total  = dist_a
+        best_routes = config_a
 
-    # Формируем остановки с порядковыми номерами
-    stops = []
-    for idx, pt in enumerate(ordered_points):
-        stops.append(
-            {
-                "stop_order": idx,
-                "type": pt["type"],
-                "id": pt["id"],
-                "lat": pt["lat"],
-                "lon": pt["lon"],
-                "address": pt["address"],
-                "order_id": pt.get("order_id"),
-                "warehouse_id": pt.get("warehouse_id"),
-                "name": pt.get("name"),
-            }
-        )
+    # Конфигурация B: единый маршрут от каждого склада (если складов > 1)
+    if len(active_whs) > 1:
+        for home_wh in warehouses:
+            stops, d = _plan_route_with_constraints(
+                home_wh, orders, wh_lookup, assignment
+            )
+            if d < best_total:
+                best_total = d
+                best_routes = [{
+                    "home_warehouse_id":   home_wh["id"],
+                    "home_warehouse_name": home_wh["name"],
+                    "stops":               stops,
+                    "total_distance":      d,
+                    "order_ids":           [o["id"] for o in orders],
+                }]
 
-    return {"stops": stops, "total_distance": total_distance}
+    return {
+        "routes":         best_routes or [],
+        "total_distance": round(best_total, 2),
+        "assignment":     {str(k): v for k, v in assignment.items()},
+        "stock_checks":   stock_checks,
+    }

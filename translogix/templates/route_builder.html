@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Построить маршрут{% endblock %}
-{% block page_title %}Оптимизация маршрута{% endblock %}
+{% block page_title %}Оптимизация маршрутов{% endblock %}
 
 {% block content %}
 <div class="row g-3">
-  <!-- Left panel: controls -->
-  <div class="col-xl-4">
-    <!-- Step 1: Select orders -->
+
+  <!-- ── Left panel ── -->
+  <div class="col-xl-4" style="max-height:calc(100vh - 90px);overflow-y:auto;">
+
+    <!-- Step 1: Orders -->
     <div class="card mb-3">
       <div class="card-header"><i class="bi bi-1-circle me-2 text-primary"></i>Выберите заказы</div>
       <div class="card-body p-0">
@@ -15,55 +17,56 @@
         </div>
       </div>
       <div class="card-footer py-2">
-        <button class="btn btn-sm btn-outline-secondary w-100" onclick="selectAllOrders()">Выбрать все новые заказы</button>
+        <button class="btn btn-sm btn-outline-secondary w-100" onclick="selectAllOrders()">
+          Выбрать все новые заказы
+        </button>
       </div>
     </div>
 
-    <!-- Step 2: Select warehouse -->
+    <!-- Step 2: Warehouses (multi-select) -->
     <div class="card mb-3">
-      <div class="card-header"><i class="bi bi-2-circle me-2 text-primary"></i>Начальный склад</div>
-      <div class="card-body">
-        <select class="form-select" id="startWarehouse">
-          <option value="">Выберите склад…</option>
-        </select>
+      <div class="card-header"><i class="bi bi-2-circle me-2 text-primary"></i>Склады отправки</div>
+      <div class="card-body p-0">
+        <div id="warehouseCheckList" class="p-2">
+          <div class="text-muted text-center py-3">Загрузка…</div>
+        </div>
       </div>
     </div>
 
-    <!-- Step 3: Optimize -->
+    <!-- Step 3: Build -->
     <div class="d-grid mb-3">
       <button class="btn btn-primary btn-lg" onclick="runOptimize()" id="optimizeBtn">
-        <i class="bi bi-cpu me-2"></i>Построить оптимальный маршрут
+        <i class="bi bi-cpu me-2"></i>Построить оптимальные маршруты
       </button>
     </div>
 
     <!-- Results -->
     <div id="routeResultPanel" class="d-none">
-      <!-- Stock check panel -->
+
+      <!-- Stock check -->
       <div id="stockCheckPanel" class="d-none mb-3"></div>
 
-      <div class="card mb-3 border-success">
-        <div class="card-header bg-success-subtle text-success fw-semibold">
-          <i class="bi bi-check-circle me-2"></i>Результат оптимизации
-        </div>
-        <div class="card-body">
-          <p class="mb-2">Общее расстояние: <strong id="totalDist">—</strong> км</p>
-          <ol class="mb-0" id="stopsList" style="font-size:.9rem;"></ol>
-        </div>
-      </div>
-      <div class="d-grid">
-        <button class="btn btn-success btn-lg" onclick="confirmRoute()" id="confirmBtn">
-          <i class="bi bi-check2-all me-2"></i>Подтвердить маршрут
+      <!-- Routes summary -->
+      <div id="routesSummaryPanel"></div>
+
+      <!-- Confirm button -->
+      <div class="d-grid mt-3">
+        <button class="btn btn-success btn-lg" onclick="confirmRoutes()" id="confirmBtn">
+          <i class="bi bi-check2-all me-2"></i>Подтвердить маршруты
         </button>
       </div>
     </div>
   </div>
 
-  <!-- Right panel: map -->
+  <!-- ── Right panel: map ── -->
   <div class="col-xl-8">
-    <div class="card h-100">
-      <div class="card-header"><i class="bi bi-map me-2 text-primary"></i>Карта маршрута</div>
+    <div class="card" style="position:sticky;top:0;">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-map me-2 text-primary"></i>Карта маршрутов</span>
+        <div id="mapLegend" class="d-flex gap-2 flex-wrap"></div>
+      </div>
       <div class="card-body p-0">
-        <div id="routeMap" style="height:560px;border-radius:0 0 .5rem .5rem;"></div>
+        <div id="routeMap" style="height:580px;border-radius:0 0 .5rem .5rem;"></div>
       </div>
     </div>
   </div>
@@ -72,10 +75,15 @@
 
 {% block scripts %}
 <script>
-let routeMap = null, routeLayer = null, currentRouteData = null;
-let ordersData = [], warehousesData = [];
-let selectedOrderIds = new Set();
+const ROUTE_COLORS = ['#2563eb','#dc2626','#16a34a','#d97706','#7c3aed','#0891b2'];
 
+let routeMap = null, routeLayers = [];
+let ordersData = [], warehousesData = [];
+let selectedOrderIds  = new Set();
+let selectedWarehouseIds = new Set();
+let currentMultiResult = null;   // result from /api/optimize_routes
+
+// ── Init ─────────────────────────────────────────────────────────────
 async function init() {
   [ordersData, warehousesData] = await Promise.all([
     apiFetch('/api/orders?status=new'),
@@ -89,16 +97,17 @@ async function init() {
   }
 
   renderOrderCheckList();
-  renderWarehouseSelect();
+  renderWarehouseCheckList();
   initMap();
 }
 
+// ── Orders ───────────────────────────────────────────────────────────
 function renderOrderCheckList() {
-  const container = document.getElementById('orderCheckList');
+  const c = document.getElementById('orderCheckList');
   if (!ordersData.length) {
-    container.innerHTML = '<div class="text-muted text-center py-3">Нет новых заказов</div>'; return;
+    c.innerHTML = '<div class="text-muted text-center py-3">Нет новых заказов</div>'; return;
   }
-  container.innerHTML = ordersData.map(o => `
+  c.innerHTML = ordersData.map(o => `
     <div class="form-check border-bottom pb-1 mb-1 px-2">
       <input class="form-check-input" type="checkbox" id="oc${o.id}" value="${o.id}"
         ${selectedOrderIds.has(o.id) ? 'checked' : ''}
@@ -115,165 +124,269 @@ function toggleOrderSel(id, checked) {
 }
 
 function selectAllOrders() {
-  ordersData.forEach(o => { selectedOrderIds.add(o.id); });
+  ordersData.forEach(o => selectedOrderIds.add(o.id));
   renderOrderCheckList();
 }
 
-function renderWarehouseSelect() {
-  const sel = document.getElementById('startWarehouse');
-  sel.innerHTML = '<option value="">Выберите склад…</option>' +
-    warehousesData.map(w => `<option value="${w.id}">${w.name} — ${w.address}</option>`).join('');
+// ── Warehouses (multi-check) ─────────────────────────────────────────
+function renderWarehouseCheckList() {
+  const c = document.getElementById('warehouseCheckList');
+  if (!warehousesData.length) {
+    c.innerHTML = '<div class="text-muted text-center py-3">Нет складов</div>'; return;
+  }
+  c.innerHTML = warehousesData.map(w => `
+    <div class="form-check border-bottom pb-1 mb-1 px-2">
+      <input class="form-check-input" type="checkbox" id="wc${w.id}" value="${w.id}"
+        ${selectedWarehouseIds.has(w.id) ? 'checked' : ''}
+        onchange="toggleWarehouseSel(${w.id}, this.checked)" />
+      <label class="form-check-label" for="wc${w.id}">
+        <strong>${w.name}</strong><br>
+        <small class="text-muted">${w.address}</small>
+      </label>
+    </div>`).join('');
 }
 
+function toggleWarehouseSel(id, checked) {
+  if (checked) selectedWarehouseIds.add(id); else selectedWarehouseIds.delete(id);
+}
+
+// ── Base map ─────────────────────────────────────────────────────────
 function initMap() {
   routeMap = L.map('routeMap').setView([55.75, 37.62], 10);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors'
-  }).addTo(routeMap);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { attribution: '© OpenStreetMap contributors' }).addTo(routeMap);
 
-  const wIcon = L.divIcon({ html: '<div class="map-icon-warehouse"><i class="bi bi-building"></i></div>', className: '', iconSize: [36, 36], iconAnchor: [18, 36] });
-  const oIcon = L.divIcon({ html: '<div class="map-icon-order"><i class="bi bi-box-seam"></i></div>', className: '', iconSize: [30, 30], iconAnchor: [15, 30] });
-
-  warehousesData.forEach(w => {
+  const wIcon = L.divIcon({
+    html: '<div class="map-icon-warehouse"><i class="bi bi-building"></i></div>',
+    className: '', iconSize: [36, 36], iconAnchor: [18, 36]
+  });
+  const oIcon = L.divIcon({
+    html: '<div class="map-icon-order"><i class="bi bi-box-seam"></i></div>',
+    className: '', iconSize: [30, 30], iconAnchor: [15, 30]
+  });
+  warehousesData.forEach(w =>
     L.marker([w.lat, w.lon], { icon: wIcon }).addTo(routeMap)
-      .bindPopup(`<b>Склад: ${w.name}</b><br>${w.address}`);
-  });
-  ordersData.forEach(o => {
+      .bindPopup(`<b>Склад: ${w.name}</b><br>${w.address}`));
+  ordersData.forEach(o =>
     L.marker([o.delivery_lat, o.delivery_lon], { icon: oIcon }).addTo(routeMap)
-      .bindPopup(`<b>Заказ #${o.id}</b><br>${o.product_name} × ${o.quantity}<br>${o.delivery_address}`);
-  });
+      .bindPopup(`<b>Заказ #${o.id}</b><br>${o.product_name} × ${o.quantity}<br>${o.delivery_address}`));
 }
 
-async function runOptimize() {
-  const orderIds = [...selectedOrderIds].map(Number);
-  const warehouseId = parseInt(document.getElementById('startWarehouse').value);
+function clearRouteOverlays() {
+  routeLayers.forEach(l => routeMap.removeLayer(l));
+  routeLayers = [];
+}
 
-  if (!orderIds.length) { showToast('Выберите хотя бы один заказ', 'warning'); return; }
-  if (!warehouseId) { showToast('Выберите начальный склад', 'warning'); return; }
+// ── Optimize ─────────────────────────────────────────────────────────
+async function runOptimize() {
+  const orderIds     = [...selectedOrderIds].map(Number);
+  const warehouseIds = [...selectedWarehouseIds].map(Number);
+
+  if (!orderIds.length)     { showToast('Выберите хотя бы один заказ', 'warning'); return; }
+  if (!warehouseIds.length) { showToast('Выберите хотя бы один склад', 'warning'); return; }
 
   const btn = document.getElementById('optimizeBtn');
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Оптимизация…';
   btn.disabled = true;
 
-  const data = await apiFetch('/api/optimize_route', {
+  const data = await apiFetch('/api/optimize_routes', {
     method: 'POST',
-    body: JSON.stringify({ order_ids: orderIds, warehouse_id: warehouseId }),
+    body: JSON.stringify({ order_ids: orderIds, warehouse_ids: warehouseIds }),
   });
 
-  btn.innerHTML = '<i class="bi bi-cpu me-2"></i>Построить оптимальный маршрут';
+  btn.innerHTML = '<i class="bi bi-cpu me-2"></i>Построить оптимальные маршруты';
   btn.disabled = false;
 
   if (!data) return;
-  currentRouteData = data;
-  drawRoute(data);
-  showRouteResult(data);
-}
+  currentMultiResult = data;
 
-function drawRoute(data) {
-  if (routeLayer) { routeLayer.forEach(l => routeMap.removeLayer(l)); }
-  routeLayer = [];
-
-  const latlngs = data.stops.map(s => [s.lat, s.lon]);
-  const polyline = L.polyline(latlngs, { color: '#2563eb', weight: 4, opacity: 0.8, dashArray: '10,6' }).addTo(routeMap);
-  routeLayer.push(polyline);
-
-  const stopIcon = (idx, type) => L.divIcon({
-    html: `<div class="map-icon-stop ${type === 'warehouse' ? 'warehouse' : ''}">${idx}</div>`,
-    className: '', iconSize: [30, 30], iconAnchor: [15, 30]
-  });
-
-  data.stops.forEach((stop, idx) => {
-    const marker = L.marker([stop.lat, stop.lon], { icon: stopIcon(idx, stop.type) }).addTo(routeMap);
-    const label = stop.type === 'warehouse' ? `<b>Склад (старт)</b>` : `<b>Остановка #${idx}</b>`;
-    marker.bindPopup(`${label}<br>${stop.address}`);
-    routeLayer.push(marker);
-  });
-
-  if (latlngs.length) routeMap.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
-}
-
-function showRouteResult(data) {
-  document.getElementById('routeResultPanel').classList.remove('d-none');
-  document.getElementById('totalDist').textContent = data.total_distance.toFixed(2);
-
-  // ── Stock availability panel ──────────────────────────────────────
-  const checks = data.stock_checks || [];
-  const panel = document.getElementById('stockCheckPanel');
-  const hasIssues = checks.some(c => !c.ok);
-
-  if (checks.length) {
-    const rows = checks.map(c => `
-      <tr>
-        <td>${c.product_name}</td>
-        <td>${c.required} ${c.unit}</td>
-        <td class="${c.ok ? 'text-success' : 'text-danger fw-bold'}">${c.available} ${c.unit}</td>
-        <td>${c.ok
-          ? '<span class="badge bg-success"><i class="bi bi-check-lg"></i> Есть</span>'
-          : '<span class="badge bg-danger"><i class="bi bi-x-lg"></i> Нет</span>'
-        }</td>
-      </tr>`).join('');
-
-    panel.innerHTML = `
-      <div class="card border-${hasIssues ? 'danger' : 'success'}">
-        <div class="card-header bg-${hasIssues ? 'danger' : 'success'}-subtle text-${hasIssues ? 'danger' : 'success'} fw-semibold py-2">
-          <i class="bi bi-${hasIssues ? 'exclamation-triangle' : 'check-circle'} me-2"></i>
-          Проверка остатков на складе
-        </div>
-        <div class="card-body p-0">
-          <table class="table table-sm mb-0" style="font-size:.85rem;">
-            <thead class="table-light">
-              <tr><th>Товар</th><th>Итого по заказам</th><th>На складе</th><th>Статус</th></tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-      </div>`;
-    panel.classList.remove('d-none');
-  } else {
-    panel.classList.add('d-none');
+  if (data.error) {
+    showToast(data.error, 'danger');
+    return;
   }
 
-  // Disable confirm if any stock is insufficient
+  clearRouteOverlays();
+  drawMultiRoutes(data.routes);
+  showResultPanel(data);
+}
+
+// ── Draw routes on map ────────────────────────────────────────────────
+function drawMultiRoutes(routes) {
+  const legend = document.getElementById('mapLegend');
+  legend.innerHTML = '';
+
+  const allLatLngs = [];
+
+  routes.forEach((route, ri) => {
+    const color = ROUTE_COLORS[ri % ROUTE_COLORS.length];
+    const stops = route.stops;
+
+    // Polyline
+    const latlngs = stops.map(s => [s.lat, s.lon]);
+    allLatLngs.push(...latlngs);
+
+    const poly = L.polyline(latlngs, {
+      color, weight: 4, opacity: 0.85, dashArray: '10,6'
+    }).addTo(routeMap);
+    routeLayers.push(poly);
+
+    // Markers
+    stops.forEach((s, i) => {
+      const isWh = s.type === 'warehouse' || s.type === 'warehouse_return';
+      const icon = L.divIcon({
+        html: `<div class="map-icon-stop" style="background:${isWh ? '#374151' : color};border-color:${color};">${i}</div>`,
+        className: '', iconSize: [30, 30], iconAnchor: [15, 30],
+      });
+      const label = isWh
+        ? `<b>${s.name || 'Склад'}</b>`
+        : `<b>Заказ #${s.order_id}</b>`;
+      const m = L.marker([s.lat, s.lon], { icon }).addTo(routeMap)
+        .bindPopup(`${label}<br>${s.address}`);
+      routeLayers.push(m);
+    });
+
+    // Legend entry
+    legend.innerHTML += `<span class="badge border" style="background:${color};font-size:.75rem;">
+      Маршрут ${ri + 1}: ${route.home_warehouse_name}
+    </span>`;
+  });
+
+  if (allLatLngs.length)
+    routeMap.fitBounds(L.latLngBounds(allLatLngs), { padding: [30, 30] });
+}
+
+// ── Result panel ──────────────────────────────────────────────────────
+function showResultPanel(data) {
+  document.getElementById('routeResultPanel').classList.remove('d-none');
+
+  // Stock check
+  showStockChecks(data.stock_checks || []);
+
+  // Routes summary
+  const summaryEl = document.getElementById('routesSummaryPanel');
+  const hasIssues = (data.stock_checks || []).some(c => !c.ok);
+
+  let html = `<div class="alert alert-${hasIssues ? 'danger' : 'success'} py-2 mb-2">
+    <strong><i class="bi bi-arrows-move me-1"></i>Суммарное расстояние: ${data.total_distance.toFixed(2)} км</strong>
+    &nbsp;·&nbsp; ${data.routes.length} маршрут${data.routes.length > 1 ? 'а' : ''}
+  </div>`;
+
+  data.routes.forEach((route, ri) => {
+    const color = ROUTE_COLORS[ri % ROUTE_COLORS.length];
+    const deliveries = route.stops.filter(s => s.type === 'delivery');
+    const warehouses = route.stops.filter(s => s.type === 'warehouse' || s.type === 'warehouse_return');
+
+    const stopRows = route.stops.map((s, i) => {
+      if (s.type === 'warehouse') {
+        return `<li class="mb-1">🏭 <strong>Старт: ${s.address}</strong> <small class="text-muted">(${s.name})</small></li>`;
+      }
+      if (s.type === 'warehouse_return') {
+        return `<li class="mb-1">🏭 <strong>Возврат: ${s.address}</strong></li>`;
+      }
+      if (s.type === 'warehouse') {
+        return `<li class="mb-1">📦 <strong>Погрузка:</strong> ${s.address} <small class="text-muted">(${s.name})</small></li>`;
+      }
+      return `<li class="mb-1">📦 ${s.address} <small class="text-muted">— Заказ #${s.order_id}</small></li>`;
+    }).join('');
+
+    html += `<div class="card mb-2" style="border-left:4px solid ${color}">
+      <div class="card-header py-2 d-flex justify-content-between" style="font-size:.9rem;">
+        <span style="color:${color}"><i class="bi bi-truck me-1"></i><strong>Маршрут ${ri + 1}</strong> — ${route.home_warehouse_name}</span>
+        <span class="text-muted">${route.total_distance.toFixed(2)} км · ${deliveries.length} дост.</span>
+      </div>
+      <div class="card-body py-2 px-3">
+        <ol class="mb-0" style="font-size:.85rem;">${stopRows}</ol>
+      </div>
+    </div>`;
+  });
+
+  summaryEl.innerHTML = html;
+
+  // Confirm button state
   const confirmBtn = document.getElementById('confirmBtn');
   if (hasIssues) {
     confirmBtn.disabled = true;
-    confirmBtn.classList.replace('btn-success', 'btn-secondary');
-    confirmBtn.innerHTML = '<i class="bi bi-x-circle me-2"></i>Недостаточно товаров на складе';
+    confirmBtn.className = 'btn btn-secondary btn-lg';
+    confirmBtn.innerHTML = '<i class="bi bi-x-circle me-2"></i>Недостаточно товаров на складах';
   } else {
     confirmBtn.disabled = false;
-    confirmBtn.classList.replace('btn-secondary', 'btn-success');
-    confirmBtn.innerHTML = '<i class="bi bi-check2-all me-2"></i>Подтвердить маршрут';
+    confirmBtn.className = 'btn btn-success btn-lg';
+    confirmBtn.innerHTML = `<i class="bi bi-check2-all me-2"></i>Подтвердить ${data.routes.length > 1 ? 'все маршруты' : 'маршрут'}`;
   }
-
-  // ── Stops list ────────────────────────────────────────────────────
-  const list = document.getElementById('stopsList');
-  list.innerHTML = data.stops.map((s, i) => {
-    const icon = s.type === 'warehouse' ? '🏭' : '📦';
-    return `<li class="mb-1">${icon} <strong>${i === 0 ? 'Старт: ' : ''}${s.address}</strong>
-      ${s.type === 'delivery' ? `<br><small class="text-muted">Заказ #${s.order_id}</small>` : ''}</li>`;
-  }).join('');
 }
 
-async function confirmRoute() {
-  if (!currentRouteData) return;
+// ── Stock check panel ─────────────────────────────────────────────────
+function showStockChecks(checks) {
+  const panel = document.getElementById('stockCheckPanel');
+  if (!checks.length) { panel.classList.add('d-none'); return; }
+
+  const hasIssues = checks.some(c => !c.ok);
+
+  const rows = checks.map(c => {
+    const whBreakdown = (c.by_warehouse || [])
+      .map(bw => `${bw.warehouse_name}: ${bw.available}`)
+      .join(' | ');
+    return `<tr>
+      <td><strong>${c.product_name}</strong></td>
+      <td class="text-center">${c.required} ${c.unit}</td>
+      <td class="text-center ${c.ok ? 'text-success' : 'text-danger fw-bold'}">${c.available} ${c.unit}</td>
+      <td><small class="text-muted">${whBreakdown}</small></td>
+      <td class="text-center">${c.ok
+        ? '<span class="badge bg-success"><i class="bi bi-check-lg"></i></span>'
+        : '<span class="badge bg-danger"><i class="bi bi-x-lg"></i></span>'
+      }</td>
+    </tr>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="card border-${hasIssues ? 'danger' : 'success'}">
+      <div class="card-header bg-${hasIssues ? 'danger' : 'success'}-subtle text-${hasIssues ? 'danger' : 'success'} fw-semibold py-2">
+        <i class="bi bi-${hasIssues ? 'exclamation-triangle' : 'check-circle'} me-2"></i>
+        Проверка суммарных остатков
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0" style="font-size:.8rem;">
+          <thead class="table-light">
+            <tr><th>Товар</th><th class="text-center">Нужно</th><th class="text-center">Итого на складах</th><th>По складам</th><th></th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  panel.classList.remove('d-none');
+}
+
+// ── Confirm routes ────────────────────────────────────────────────────
+async function confirmRoutes() {
+  if (!currentMultiResult) return;
+
   const btn = document.getElementById('confirmBtn');
   btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Сохранение…';
   btn.disabled = true;
 
   const now = new Date().toLocaleDateString('ru-RU');
+
   const payload = {
-    name: `Маршрут от ${now}`,
-    total_distance: currentRouteData.total_distance,
-    stops: currentRouteData.stops,
-    warehouse_id: currentRouteData.warehouse_id,
+    routes: currentMultiResult.routes.map((r, i) => ({
+      name:               `Маршрут ${i + 1} от ${now} (${r.home_warehouse_name})`,
+      total_distance:     r.total_distance,
+      home_warehouse_id:  r.home_warehouse_id,
+      stops:              r.stops,
+      order_ids:          r.order_ids,
+    })),
+    assignment: currentMultiResult.assignment,
   };
 
-  const res = await apiFetch('/api/routes', { method: 'POST', body: JSON.stringify(payload) });
+  const res = await apiFetch('/api/routes/batch', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
   if (res) {
-    showToast('Маршрут подтверждён! Товары списаны со склада.', 'success');
+    showToast(`${res.length} маршрут(а) сохранено! Товары списаны со складов.`, 'success');
     setTimeout(() => { window.location.href = '/routes'; }, 1400);
   } else {
-    btn.innerHTML = '<i class="bi bi-check2-all me-2"></i>Подтвердить маршрут';
+    btn.innerHTML = `<i class="bi bi-check2-all me-2"></i>Подтвердить маршруты`;
     btn.disabled = false;
   }
 }
