@@ -25,18 +25,28 @@ def optimize():
     if not orders:
         return jsonify({"error": "Заказы не найдены"}), 404
 
-    # Stock availability check
-    stock_checks = []
+    # Stock availability check — aggregate by product across all orders
+    from collections import defaultdict
+    required_by_product = defaultdict(float)
+    product_meta = {}
     for o in orders:
-        stock     = Stock.query.filter_by(warehouse_id=warehouse.id, product_id=o.product_id).first()
+        required_by_product[o.product_id] += o.quantity
+        if o.product_id not in product_meta:
+            product_meta[o.product_id] = {
+                "name": o.product.name if o.product else f"ID {o.product_id}",
+                "unit": o.product.unit if o.product else "",
+            }
+
+    stock_checks = []
+    for product_id, total_required in required_by_product.items():
+        stock     = Stock.query.filter_by(warehouse_id=warehouse.id, product_id=product_id).first()
         available = stock.quantity if stock else 0
         stock_checks.append({
-            "order_id":    o.id,
-            "product_name": o.product.name if o.product else "",
-            "unit":        o.product.unit  if o.product else "",
-            "required":    o.quantity,
-            "available":   available,
-            "ok":          available >= o.quantity,
+            "product_name": product_meta[product_id]["name"],
+            "unit":         product_meta[product_id]["unit"],
+            "required":     total_required,
+            "available":    available,
+            "ok":           available >= total_required,
         })
 
     wh_dict = {"id": warehouse.id, "lat": warehouse.lat, "lon": warehouse.lon,
@@ -80,16 +90,29 @@ def create_route():
     order_ids_in_route = [s["order_id"] for s in data["stops"] if s.get("order_id")]
     orders = Order.query.filter(Order.id.in_(order_ids_in_route)).all()
 
-    # Stock check
+    # Stock check — aggregate by product across all orders
     if warehouse_id:
-        insufficient = []
+        from collections import defaultdict
+        required_by_product = defaultdict(float)
+        product_meta = {}
         for o in orders:
-            stock     = Stock.query.filter_by(warehouse_id=warehouse_id, product_id=o.product_id).first()
+            required_by_product[o.product_id] += o.quantity
+            if o.product_id not in product_meta:
+                product_meta[o.product_id] = {
+                    "name": o.product.name if o.product else f"ID {o.product_id}",
+                    "unit": o.product.unit if o.product else "",
+                }
+
+        insufficient = []
+        for product_id, total_required in required_by_product.items():
+            stock     = Stock.query.filter_by(warehouse_id=warehouse_id, product_id=product_id).first()
             available = stock.quantity if stock else 0
-            if available < o.quantity:
-                pname = o.product.name if o.product else f"ID {o.product_id}"
-                unit  = o.product.unit  if o.product else ""
-                insufficient.append(f"«{pname}»: требуется {o.quantity} {unit}, доступно {available} {unit}")
+            if available < total_required:
+                pname = product_meta[product_id]["name"]
+                unit  = product_meta[product_id]["unit"]
+                insufficient.append(
+                    f"«{pname}»: требуется {total_required} {unit}, доступно {available} {unit}"
+                )
         if insufficient:
             return jsonify({"error": "Недостаточно товаров на складе", "details": insufficient}), 409
 
