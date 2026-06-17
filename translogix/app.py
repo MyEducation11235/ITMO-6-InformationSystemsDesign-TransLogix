@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 def create_app():
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
-    # Configuration
     basedir = os.path.abspath(os.path.dirname(__file__))
     db_path = os.path.join(basedir, "translogix.db")
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_path}"
@@ -23,13 +22,12 @@ def create_app():
     CORS(app)
     db.init_app(app)
 
-    # Register API blueprints
     from routes.api_warehouses import bp as warehouses_bp
-    from routes.api_products import bp as products_bp
-    from routes.api_stocks import bp as stocks_bp
-    from routes.api_orders import bp as orders_bp
-    from routes.api_routes import bp as routes_bp
-    from routes.api_dashboard import bp as dashboard_bp
+    from routes.api_products   import bp as products_bp
+    from routes.api_stocks     import bp as stocks_bp
+    from routes.api_orders     import bp as orders_bp
+    from routes.api_routes     import bp as routes_bp
+    from routes.api_dashboard  import bp as dashboard_bp
 
     app.register_blueprint(warehouses_bp)
     app.register_blueprint(products_bp)
@@ -38,7 +36,6 @@ def create_app():
     app.register_blueprint(routes_bp)
     app.register_blueprint(dashboard_bp)
 
-    # Frontend page routes
     @app.route("/")
     def index():
         return render_template("dashboard.html")
@@ -63,7 +60,6 @@ def create_app():
     def routes_page():
         return render_template("routes.html")
 
-    # Error handlers
     @app.errorhandler(404)
     def not_found(e):
         from flask import request, jsonify
@@ -79,17 +75,32 @@ def create_app():
             return jsonify({"error": "Внутренняя ошибка сервера"}), 500
         return render_template("dashboard.html"), 500
 
-    # Create tables on first run
     with app.app_context():
         db.create_all()
+        _migrate_db()
         _seed_if_empty()
 
     return app
 
 
+def _migrate_db():
+    """Add new columns to existing tables without losing data (SQLite safe)."""
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE routes ADD COLUMN status VARCHAR(50) DEFAULT 'pending'",
+        "ALTER TABLE route_stops ADD COLUMN delivery_result VARCHAR(20)",
+    ]
+    with db.engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists — safe to ignore
+
+
 def _seed_if_empty():
-    """Инициализирует тестовые данные, если БД пустая."""
-    from models import Warehouse, Product, Stock, Order
+    from models import Warehouse
     if Warehouse.query.count() == 0:
         try:
             from seed_data import seed

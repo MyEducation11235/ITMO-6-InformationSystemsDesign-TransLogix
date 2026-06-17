@@ -1,5 +1,6 @@
 __pycache__*
 venv*
+/translogix/translogix.db
 
 # compiled output
 dist

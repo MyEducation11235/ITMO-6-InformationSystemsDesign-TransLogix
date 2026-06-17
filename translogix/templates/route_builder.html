@@ -38,6 +38,9 @@
 
     <!-- Results -->
     <div id="routeResultPanel" class="d-none">
+      <!-- Stock check panel -->
+      <div id="stockCheckPanel" class="d-none mb-3"></div>
+
       <div class="card mb-3 border-success">
         <div class="card-header bg-success-subtle text-success fw-semibold">
           <i class="bi bi-check-circle me-2"></i>Результат оптимизации
@@ -79,7 +82,6 @@ async function init() {
     apiFetch('/api/warehouses'),
   ]);
 
-  // Pre-select orders passed from orders page
   const saved = localStorage.getItem('selectedOrderIds');
   if (saved) {
     JSON.parse(saved).forEach(id => selectedOrderIds.add(id));
@@ -168,7 +170,6 @@ async function runOptimize() {
 }
 
 function drawRoute(data) {
-  // Clear previous route layer
   if (routeLayer) { routeLayer.forEach(l => routeMap.removeLayer(l)); }
   routeLayer = [];
 
@@ -195,6 +196,56 @@ function showRouteResult(data) {
   document.getElementById('routeResultPanel').classList.remove('d-none');
   document.getElementById('totalDist').textContent = data.total_distance.toFixed(2);
 
+  // ── Stock availability panel ──────────────────────────────────────
+  const checks = data.stock_checks || [];
+  const panel = document.getElementById('stockCheckPanel');
+  const hasIssues = checks.some(c => !c.ok);
+
+  if (checks.length) {
+    const rows = checks.map(c => `
+      <tr>
+        <td>${c.product_name}</td>
+        <td>${c.required} ${c.unit}</td>
+        <td class="${c.ok ? 'text-success' : 'text-danger fw-bold'}">${c.available} ${c.unit}</td>
+        <td>${c.ok
+          ? '<span class="badge bg-success"><i class="bi bi-check-lg"></i> Есть</span>'
+          : '<span class="badge bg-danger"><i class="bi bi-x-lg"></i> Нет</span>'
+        }</td>
+      </tr>`).join('');
+
+    panel.innerHTML = `
+      <div class="card border-${hasIssues ? 'danger' : 'success'}">
+        <div class="card-header bg-${hasIssues ? 'danger' : 'success'}-subtle text-${hasIssues ? 'danger' : 'success'} fw-semibold py-2">
+          <i class="bi bi-${hasIssues ? 'exclamation-triangle' : 'check-circle'} me-2"></i>
+          Проверка остатков на складе
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0" style="font-size:.85rem;">
+            <thead class="table-light">
+              <tr><th>Товар</th><th>Требуется</th><th>Доступно</th><th>Статус</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    panel.classList.remove('d-none');
+  } else {
+    panel.classList.add('d-none');
+  }
+
+  // Disable confirm if any stock is insufficient
+  const confirmBtn = document.getElementById('confirmBtn');
+  if (hasIssues) {
+    confirmBtn.disabled = true;
+    confirmBtn.classList.replace('btn-success', 'btn-secondary');
+    confirmBtn.innerHTML = '<i class="bi bi-x-circle me-2"></i>Недостаточно товаров на складе';
+  } else {
+    confirmBtn.disabled = false;
+    confirmBtn.classList.replace('btn-secondary', 'btn-success');
+    confirmBtn.innerHTML = '<i class="bi bi-check2-all me-2"></i>Подтвердить маршрут';
+  }
+
+  // ── Stops list ────────────────────────────────────────────────────
   const list = document.getElementById('stopsList');
   list.innerHTML = data.stops.map((s, i) => {
     const icon = s.type === 'warehouse' ? '🏭' : '📦';
@@ -214,12 +265,13 @@ async function confirmRoute() {
     name: `Маршрут от ${now}`,
     total_distance: currentRouteData.total_distance,
     stops: currentRouteData.stops,
+    warehouse_id: currentRouteData.warehouse_id,
   };
 
   const res = await apiFetch('/api/routes', { method: 'POST', body: JSON.stringify(payload) });
   if (res) {
-    showToast('Маршрут подтверждён и сохранён!', 'success');
-    setTimeout(() => { window.location.href = '/routes'; }, 1200);
+    showToast('Маршрут подтверждён! Товары списаны со склада.', 'success');
+    setTimeout(() => { window.location.href = '/routes'; }, 1400);
   } else {
     btn.innerHTML = '<i class="bi bi-check2-all me-2"></i>Подтвердить маршрут';
     btn.disabled = false;
